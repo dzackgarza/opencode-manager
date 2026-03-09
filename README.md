@@ -1,15 +1,18 @@
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I2I57UKJ8)
+
+
 # opencode-manager
 
-Bun-based OpenCode session automation, run from GitHub with `npx`.
+This Bun-based package automates OpenCode sessions via GitHub and `npx`.
 
 ## Scope
 
-This package owns the former harness utilities:
+This package provides session management and automation through the former harness utilities:
 
-- `opx` for run, resume, provider, and debug flows
-- `opx-session` for broader session management
+- `opx` manages run, resume, provider, and debug flows.
+- `opx-session` provides broader session control.
 
-Transcript rendering is intentionally external and always resolved through:
+Transcript rendering remains external and must be resolved through the following command:
 
 ```bash
 uvx --from git+ssh://git@github.com/dzackgarza/opencode-transcripts.git opencode-transcript
@@ -17,7 +20,7 @@ uvx --from git+ssh://git@github.com/dzackgarza/opencode-transcripts.git opencode
 
 ## Run
 
-Requires `npx`, `bun`, and GitHub SSH access to the private repo.
+Running these tools requires `npx`, `bun`, and GitHub SSH access to the private repository.
 
 ```bash
 npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opx --help
@@ -26,6 +29,6 @@ npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opx
 
 ## Environment
 
-- `OPENCODE_BASE_URL` defaults to `http://127.0.0.1:4096`
-- `OPENCODE_SERVER_USERNAME` defaults to `opencode`
-- `OPENCODE_SERVER_PASSWORD` is optional
+- `OPENCODE_BASE_URL`: defaults to `http://127.0.0.1:4096`
+- `OPENCODE_SERVER_USERNAME`: defaults to `opencode`
+- `OPENCODE_SERVER_PASSWORD`: is optional
