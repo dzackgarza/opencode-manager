@@ -6,9 +6,8 @@ const REQUEST_TIMEOUT_MS = 180000;
 let RESOLVED_BASE_URL = "http://127.0.0.1:4096";
 let AUTH_HEADER = "";
 
-const OPX_TRANSCRIPT_SCRIPT =
-  process.env.OPX_TRANSCRIPT_SCRIPT ??
-  "/home/dzack/.agents/skills/reading-transcripts/scripts/parse_opencode_log.py";
+const TRANSCRIPT_PACKAGE_SPEC =
+  "git+ssh://git@github.com/dzackgarza/opencode-transcripts.git";
 
 type KV = Record<string, string | boolean>;
 
@@ -366,10 +365,18 @@ async function promptAsyncRequest(
 // ---------------------------------------------------------------------------
 
 async function generateTranscript(sessionID: string): Promise<string> {
-  return new Promise<string>((resolve) => {
-    const child = spawn("python3", [OPX_TRANSCRIPT_SCRIPT, sessionID], {
-      env: process.env,
-    });
+  const result = await new Promise<{
+    code: number | null;
+    out: string;
+    failedToSpawn: boolean;
+  }>((resolve) => {
+    const child = spawn(
+      "uvx",
+      ["--from", TRANSCRIPT_PACKAGE_SPEC, "opencode-transcript", sessionID],
+      {
+        env: process.env,
+      },
+    );
     let out = "";
     child.stdout.on("data", (d) => {
       out += d.toString();
@@ -377,11 +384,17 @@ async function generateTranscript(sessionID: string): Promise<string> {
     child.stderr.on("data", (d) => {
       out += d.toString();
     });
-    child.on("close", () => resolve(out));
-    child.on("error", () =>
-      resolve(`[transcript unavailable for ${sessionID}]`),
-    );
+    child.on("close", (code) => resolve({ code, out, failedToSpawn: false }));
+    child.on("error", () => resolve({ code: null, out: "", failedToSpawn: true }));
   });
+
+  if (!result.failedToSpawn && result.code === 0 && result.out.trim()) {
+    return result.out;
+  }
+
+  return result.out.trim()
+    ? `[transcript unavailable for ${sessionID}] ${result.out.trim()}`
+    : `[transcript unavailable for ${sessionID}]`;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +448,7 @@ async function waitForIdle(
 
   // No directory filter — we filter by sessionID in the handler.
   // Using process.cwd() would silently drop all events: the server defaults
-  // session directories to its own cwd (/home/dzack), not the caller's.
+  // session directories to its own working directory, not the caller's.
   const stream = await client.event.subscribe({
     signal: controller.signal,
   });
@@ -1207,7 +1220,7 @@ function help() {
     "  OPENCODE_BASE_URL (default http://127.0.0.1:4096)",
     "  OPENCODE_SERVER_USERNAME (default opencode)",
     "  OPENCODE_SERVER_PASSWORD (optional)",
-    "  OPX_TRANSCRIPT_SCRIPT (default: parse_opencode_log.py path)",
+    `  Transcript renderer: uvx --from ${TRANSCRIPT_PACKAGE_SPEC} opencode-transcript`,
   ];
   console.log(text.join("\n"));
 }
