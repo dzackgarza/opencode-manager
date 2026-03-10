@@ -1,5 +1,5 @@
 {
-  "name": "opencode-manager",
+  "name": "@dzackgarza/opencode-manager",
   "version": "0.1.0",
   "description": "Bun-first manager tools for OpenCode session automation",
   "license": "UNLICENSED",
@@ -28,5 +28,17 @@
   "devDependencies": {
     "bun-types": "^1.3.10",
     "typescript": "^5.9.3"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dzackgarza/opencode-manager.git"
+  },
+  "keywords": [
+    "opencode",
+    "plugin"
+  ],
+  "funding": "https://ko-fi.com/I2I57UKJ8"
 }
