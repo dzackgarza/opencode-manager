@@ -27,7 +27,7 @@ import { $ } from "bun";
 const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL ?? "http://localhost:4096";
 const OPENCODE_API_KEY = process.env.OPENCODE_API_KEY;
 
-const API_BASE = `${OPENCODE_BASE_URL}/api`;
+const API_BASE = OPENCODE_BASE_URL;
 
 const headers: Record<string, string> = {
   "Content-Type": "application/json",
@@ -92,6 +92,16 @@ interface UserMessage extends Message {
   role: "user";
 }
 
+type PromptResult =
+  | {
+      queued: true;
+      noReply: true;
+    }
+  | {
+      info: Message;
+      parts: Part[];
+    };
+
 // ---------------------------------------------------------------------------
 // API Client
 // ---------------------------------------------------------------------------
@@ -118,20 +128,79 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
   return response.json() as Promise<T>;
 }
 
+async function promptAsyncRequest(
+  sessionID: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/session/${encodeURIComponent(sessionID)}/prompt_async`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    },
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "Unknown error");
+    throw new Error(`API error (${response.status}): ${errorText}`);
+  }
+}
+
+function parseModelRef(model: string | undefined): {
+  providerID: string;
+  modelID: string;
+} {
+  const value = (model ?? "").trim();
+  const [providerID, ...rest] = value.split("/");
+  if (!providerID || rest.length === 0) {
+    throw new Error("Expected --model in provider/model format.");
+  }
+  return {
+    providerID,
+    modelID: rest.join("/"),
+  };
+}
+
+function mapPermissionResponse(
+  response:
+    | "allow"
+    | "deny"
+    | "allow-session"
+    | "deny-session"
+    | "once"
+    | "always"
+    | "reject",
+): "once" | "always" | "reject" {
+  switch (response) {
+    case "allow":
+      return "once";
+    case "allow-session":
+      return "always";
+    case "deny":
+    case "deny-session":
+    case "reject":
+      return "reject";
+    case "once":
+    case "always":
+      return response;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Session Operations - Full API
 // ---------------------------------------------------------------------------
 
 // session.list()
 async function listSessions(): Promise<Session[]> {
-  const { data } = await apiRequest<{ data: Session[] }>("/sessions");
+  const data = await apiRequest<Session[]>("/session");
   return (data ?? []).sort((a, b) => b.time.updated - a.time.updated);
 }
 
 // session.get({ path: { id } })
 async function getSession(sessionID: string): Promise<Session | null> {
   try {
-    const { data } = await apiRequest<{ data: Session }>(`/sessions/${sessionID}`);
+    const data = await apiRequest<Session>(`/session/${sessionID}`);
     return data ?? null;
   } catch (error: any) {
     if (error.message?.includes("404")) {
@@ -144,7 +213,7 @@ async function getSession(sessionID: string): Promise<Session | null> {
 // session.children({ path: { id } })
 async function getChildSessions(sessionID: string): Promise<Session[]> {
   try {
-    const { data } = await apiRequest<{ data: Session[] }>(`/sessions/${sessionID}/children`);
+    const data = await apiRequest<Session[]>(`/session/${sessionID}/children`);
     return (data ?? []).sort((a, b) => b.time.updated - a.time.updated);
   } catch (error: any) {
     if (error.message?.includes("404")) {
@@ -156,7 +225,7 @@ async function getChildSessions(sessionID: string): Promise<Session[]> {
 
 // session.create({ body })
 async function createSession(options?: { title?: string; parentID?: string }): Promise<Session> {
-  const { data } = await apiRequest<{ data: Session }>("/sessions", {
+  const data = await apiRequest<Session>("/session", {
     method: "POST",
     body: JSON.stringify({
       title: options?.title ?? `session-${Date.now()}`,
@@ -173,7 +242,7 @@ async function createSession(options?: { title?: string; parentID?: string }): P
 
 // session.update({ path: { id }, body })
 async function updateSession(sessionID: string, updates: { title?: string; [key: string]: any }): Promise<Session> {
-  const { data } = await apiRequest<{ data: Session }>(`/sessions/${sessionID}`, {
+  const data = await apiRequest<Session>(`/session/${sessionID}`, {
     method: "PATCH",
     body: JSON.stringify(updates),
   });
@@ -188,10 +257,9 @@ async function updateSession(sessionID: string, updates: { title?: string; [key:
 // session.delete({ path: { id } })
 async function deleteSession(sessionID: string): Promise<boolean> {
   try {
-    await apiRequest(`/sessions/${sessionID}`, {
+    return await apiRequest<boolean>(`/session/${sessionID}`, {
       method: "DELETE",
     });
-    return true;
   } catch (error: any) {
     if (error.message?.includes("404")) {
       return false;
@@ -203,10 +271,9 @@ async function deleteSession(sessionID: string): Promise<boolean> {
 // session.abort({ path: { id } })
 async function abortSession(sessionID: string): Promise<boolean> {
   try {
-    await apiRequest(`/sessions/${sessionID}/abort`, {
+    return await apiRequest<boolean>(`/session/${sessionID}/abort`, {
       method: "POST",
     });
-    return true;
   } catch (error: any) {
     if (error.message?.includes("404")) {
       return false;
@@ -217,7 +284,7 @@ async function abortSession(sessionID: string): Promise<boolean> {
 
 // session.share({ path: { id } })
 async function shareSession(sessionID: string): Promise<Session> {
-  const { data } = await apiRequest<{ data: Session }>(`/sessions/${sessionID}/share`, {
+  const data = await apiRequest<Session>(`/session/${sessionID}/share`, {
     method: "POST",
   });
   
@@ -230,8 +297,8 @@ async function shareSession(sessionID: string): Promise<Session> {
 
 // session.unshare({ path: { id } })
 async function unshareSession(sessionID: string): Promise<Session> {
-  const { data } = await apiRequest<{ data: Session }>(`/sessions/${sessionID}/unshare`, {
-    method: "POST",
+  const data = await apiRequest<Session>(`/session/${sessionID}/share`, {
+    method: "DELETE",
   });
   
   if (!data) {
@@ -242,13 +309,15 @@ async function unshareSession(sessionID: string): Promise<Session> {
 }
 
 // session.summarize({ path: { id }, body })
-async function summarizeSession(sessionID: string, options?: { instruction?: string }): Promise<boolean> {
+async function summarizeSession(
+  sessionID: string,
+  options: { model?: string },
+): Promise<boolean> {
   try {
-    await apiRequest(`/sessions/${sessionID}/summarize`, {
+    const model = parseModelRef(options.model);
+    await apiRequest<boolean>(`/session/${sessionID}/summarize`, {
       method: "POST",
-      body: JSON.stringify({
-        instruction: options?.instruction,
-      }),
+      body: JSON.stringify(model),
     });
     return true;
   } catch (error: any) {
@@ -261,8 +330,8 @@ async function summarizeSession(sessionID: string, options?: { instruction?: str
 
 // session.messages({ path: { id } })
 async function getMessages(sessionID: string): Promise<Array<{ info: Message; parts: Part[] }>> {
-  const { data } = await apiRequest<{ data: Array<{ info: Message; parts: Part[] }> }>(
-    `/sessions/${sessionID}/messages`
+  const data = await apiRequest<Array<{ info: Message; parts: Part[] }>>(
+    `/session/${sessionID}/message`
   );
   return data ?? [];
 }
@@ -270,8 +339,8 @@ async function getMessages(sessionID: string): Promise<Array<{ info: Message; pa
 // session.message({ path: { id, messageId } })
 async function getMessage(sessionID: string, messageID: string): Promise<{ info: Message; parts: Part[] } | null> {
   try {
-    const { data } = await apiRequest<{ data: { info: Message; parts: Part[] } }>(
-      `/sessions/${sessionID}/messages/${messageID}`
+    const data = await apiRequest<{ info: Message; parts: Part[] }>(
+      `/session/${sessionID}/message/${messageID}`
     );
     return data ?? null;
   } catch (error: any) {
@@ -287,23 +356,34 @@ async function sendPrompt(
   sessionID: string,
   message: string,
   options?: { noReply?: boolean; outputFormat?: string }
-): Promise<AssistantMessage | UserMessage> {
-  const { data } = await apiRequest<{ data: AssistantMessage | UserMessage }>(
-    `/sessions/${sessionID}/prompt`,
+): Promise<PromptResult> {
+  if (options?.outputFormat) {
+    throw new Error(
+      "--output-format is not supported by the current OpenCode session prompt API.",
+    );
+  }
+
+  if (options?.noReply) {
+    await promptAsyncRequest(sessionID, {
+      parts: [{ type: "text", text: message }],
+    });
+    return { queued: true, noReply: true };
+  }
+
+  const data = await apiRequest<{ info: Message; parts: Part[] }>(
+    `/session/${sessionID}/message`,
     {
       method: "POST",
       body: JSON.stringify({
-        message,
-        noReply: options?.noReply,
-        outputFormat: options?.outputFormat,
+        parts: [{ type: "text", text: message }],
       }),
-    }
+    },
   );
-  
+
   if (!data) {
     throw new Error("Failed to send prompt");
   }
-  
+
   return data;
 }
 
@@ -313,12 +393,15 @@ async function sendCommand(
   command: string,
   args?: string[]
 ): Promise<{ info: AssistantMessage; parts: Part[] }> {
-  const { data } = await apiRequest<{ data: { info: AssistantMessage; parts: Part[] } }>(
-    `/sessions/${sessionID}/command`,
+  const data = await apiRequest<{ info: AssistantMessage; parts: Part[] }>(
+    `/session/${sessionID}/command`,
     {
       method: "POST",
-      body: JSON.stringify({ command, args }),
-    }
+      body: JSON.stringify({
+        command,
+        arguments: (args ?? []).join(" "),
+      }),
+    },
   );
   
   if (!data) {
@@ -331,14 +414,18 @@ async function sendCommand(
 // session.shell({ path: { id }, body })
 async function runShell(
   sessionID: string,
-  command: string
+  command: string,
+  options?: { agent?: string }
 ): Promise<AssistantMessage> {
-  const { data } = await apiRequest<{ data: AssistantMessage }>(
-    `/sessions/${sessionID}/shell`,
+  const data = await apiRequest<AssistantMessage>(
+    `/session/${sessionID}/shell`,
     {
       method: "POST",
-      body: JSON.stringify({ command }),
-    }
+      body: JSON.stringify({
+        agent: options?.agent ?? "Interactive",
+        command,
+      }),
+    },
   );
   
   if (!data) {
@@ -350,12 +437,12 @@ async function runShell(
 
 // session.revert({ path: { id }, body })
 async function revertMessage(sessionID: string, messageID: string): Promise<Session> {
-  const { data } = await apiRequest<{ data: Session }>(
-    `/sessions/${sessionID}/revert`,
+  const data = await apiRequest<Session>(
+    `/session/${sessionID}/revert`,
     {
       method: "POST",
       body: JSON.stringify({ messageID }),
-    }
+    },
   );
   
   if (!data) {
@@ -367,11 +454,11 @@ async function revertMessage(sessionID: string, messageID: string): Promise<Sess
 
 // session.unrevert({ path: { id } })
 async function unrevertSession(sessionID: string): Promise<Session> {
-  const { data } = await apiRequest<{ data: Session }>(
-    `/sessions/${sessionID}/unrevert`,
+  const data = await apiRequest<Session>(
+    `/session/${sessionID}/unrevert`,
     {
       method: "POST",
-    }
+    },
   );
   
   if (!data) {
@@ -384,14 +471,18 @@ async function unrevertSession(sessionID: string): Promise<Session> {
 // session.init({ path: { id }, body })
 async function initSession(
   sessionID: string,
-  options?: { analyze?: boolean; createAgentsMd?: boolean }
+  options: { messageID?: string; model?: string }
 ): Promise<boolean> {
   try {
-    await apiRequest(`/sessions/${sessionID}/init`, {
+    if (!options.messageID) {
+      throw new Error("init requires --message-id <message-id>.");
+    }
+    const model = parseModelRef(options.model);
+    await apiRequest<boolean>(`/session/${sessionID}/init`, {
       method: "POST",
       body: JSON.stringify({
-        analyze: options?.analyze,
-        createAgentsMd: options?.createAgentsMd,
+        messageID: options.messageID,
+        ...model,
       }),
     });
     return true;
@@ -407,14 +498,20 @@ async function initSession(
 async function respondToPermission(
   sessionID: string,
   permissionID: string,
-  response: "allow" | "deny" | "allow-session" | "deny-session"
+  response:
+    | "allow"
+    | "deny"
+    | "allow-session"
+    | "deny-session"
+    | "once"
+    | "always"
+    | "reject"
 ): Promise<boolean> {
   try {
-    await apiRequest(`/sessions/${sessionID}/permissions/${permissionID}`, {
+    return await apiRequest<boolean>(`/session/${sessionID}/permissions/${permissionID}`, {
       method: "POST",
-      body: JSON.stringify({ response }),
+      body: JSON.stringify({ response: mapPermissionResponse(response) }),
     });
-    return true;
   } catch (error: any) {
     if (error.message?.includes("404")) {
       return false;
@@ -619,12 +716,21 @@ async function cmdChildren(sessionID: string, options: { json?: boolean }): Prom
   }
 }
 
-async function cmdCreate(options: { title?: string; parent?: string }): Promise<void> {
+async function cmdCreate(options: {
+  title?: string;
+  parent?: string;
+  json?: boolean;
+}): Promise<void> {
   const session = await createSession({
     title: options.title,
     parentID: options.parent,
   });
-  
+
+  if (options.json) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
   console.log(`Created session:`);
   console.log(`  ID:    ${session.id}`);
   console.log(`  Title: ${session.title}`);
@@ -633,58 +739,113 @@ async function cmdCreate(options: { title?: string; parent?: string }): Promise<
   }
 }
 
-async function cmdUpdate(sessionID: string, updates: { title?: string }): Promise<void> {
+async function cmdUpdate(
+  sessionID: string,
+  updates: { title?: string; json?: boolean },
+): Promise<void> {
   const session = await updateSession(sessionID, updates);
-  
+
+  if (updates.json) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
   console.log(`Updated session:`);
   console.log(formatSession(session));
 }
 
-async function cmdDelete(sessionID: string): Promise<void> {
+async function cmdDelete(
+  sessionID: string,
+  options: { json?: boolean },
+): Promise<void> {
   const deleted = await deleteSession(sessionID);
-  
+
   if (!deleted) {
     console.error(`Session not found: ${sessionID}`);
     process.exit(1);
   }
-  
+
+  if (options.json) {
+    console.log(JSON.stringify({ ok: true, sessionID }, null, 2));
+    return;
+  }
+
   console.log(`Deleted session: ${sessionID}`);
 }
 
-async function cmdAbort(sessionID: string): Promise<void> {
+async function cmdAbort(
+  sessionID: string,
+  options: { json?: boolean },
+): Promise<void> {
   const aborted = await abortSession(sessionID);
-  
+
   if (!aborted) {
     console.error(`Session not found: ${sessionID}`);
     process.exit(1);
   }
-  
+
+  if (options.json) {
+    console.log(JSON.stringify({ ok: true, sessionID }, null, 2));
+    return;
+  }
+
   console.log(`Aborted session: ${sessionID}`);
 }
 
-async function cmdShare(sessionID: string): Promise<void> {
+async function cmdShare(
+  sessionID: string,
+  options: { json?: boolean },
+): Promise<void> {
   const session = await shareSession(sessionID);
-  
+
+  if (options.json) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
   console.log(`Shared session:`);
   console.log(`  ID:  ${session.id}`);
   console.log(`  URL: ${session.shareUrl ?? "(not available)"}`);
 }
 
-async function cmdUnshare(sessionID: string): Promise<void> {
-  await unshareSession(sessionID);
+async function cmdUnshare(
+  sessionID: string,
+  options: { json?: boolean },
+): Promise<void> {
+  const session = await unshareSession(sessionID);
+
+  if (options.json) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
   console.log(`Unshared session: ${sessionID}`);
 }
 
-async function cmdSummarize(sessionID: string, options: { instruction?: string }): Promise<void> {
+async function cmdSummarize(
+  sessionID: string,
+  options: { model?: string; json?: boolean },
+): Promise<void> {
   const summarized = await summarizeSession(sessionID, {
-    instruction: options.instruction,
+    model: options.model,
   });
-  
+
   if (!summarized) {
     console.error(`Session not found: ${sessionID}`);
     process.exit(1);
   }
-  
+
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        { ok: true, action: "summarize", sessionID, model: options.model },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
   console.log(`Summarization started for: ${sessionID}`);
 }
 
@@ -747,50 +908,110 @@ async function cmdCommand(sessionID: string, command: string, args: string[]): P
   console.log(JSON.stringify(result, null, 2));
 }
 
-async function cmdShell(sessionID: string, command: string): Promise<void> {
-  const result = await runShell(sessionID, command);
+async function cmdShell(
+  sessionID: string,
+  command: string,
+  options: { agent?: string },
+): Promise<void> {
+  const result = await runShell(sessionID, command, options);
   
   console.log(JSON.stringify(result, null, 2));
 }
 
-async function cmdRevert(sessionID: string, messageID: string): Promise<void> {
+async function cmdRevert(
+  sessionID: string,
+  messageID: string,
+  options: { json?: boolean },
+): Promise<void> {
   const session = await revertMessage(sessionID, messageID);
-  
+
+  if (options.json) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
   console.log(`Reverted message ${messageID} in session ${session.id}`);
 }
 
-async function cmdUnrevert(sessionID: string): Promise<void> {
+async function cmdUnrevert(
+  sessionID: string,
+  options: { json?: boolean },
+): Promise<void> {
   const session = await unrevertSession(sessionID);
-  
+
+  if (options.json) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
   console.log(`Unreverted session: ${session.id}`);
 }
 
-async function cmdInit(sessionID: string, options: { analyze?: boolean; createAgentsMd?: boolean }): Promise<void> {
+async function cmdInit(
+  sessionID: string,
+  options: { messageID?: string; model?: string; json?: boolean },
+): Promise<void> {
   const initialized = await initSession(sessionID, {
-    analyze: options.analyze,
-    createAgentsMd: options.createAgentsMd,
+    messageID: options.messageID,
+    model: options.model,
   });
-  
+
   if (!initialized) {
     console.error(`Session not found: ${sessionID}`);
     process.exit(1);
   }
-  
+
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          action: "init",
+          sessionID,
+          messageID: options.messageID,
+          model: options.model,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
   console.log(`Initialized session: ${sessionID}`);
 }
 
 async function cmdPermission(
   sessionID: string,
   permissionID: string,
-  response: "allow" | "deny" | "allow-session" | "deny-session"
+  response:
+    | "allow"
+    | "deny"
+    | "allow-session"
+    | "deny-session"
+    | "once"
+    | "always"
+    | "reject",
+  options: { json?: boolean },
 ): Promise<void> {
   const responded = await respondToPermission(sessionID, permissionID, response);
-  
+
   if (!responded) {
     console.error(`Permission not found: ${permissionID} in session ${sessionID}`);
     process.exit(1);
   }
-  
+
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        { ok: true, sessionID, permissionID, response },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
   console.log(`Responded to permission ${permissionID}: ${response}`);
 }
 
@@ -832,30 +1053,38 @@ Session Management:
   list [--limit N] [--json]              List all sessions
   get <session-id> [--json]              Get session details
   children <session-id> [--json]         List child sessions
-  create [--title "title"] [--parent]    Create a new session
-  update <session-id> [--title "new"]    Update session properties
-  delete <session-id>                    Delete a session
-  abort <session-id>                     Abort a running session
-  share <session-id>                     Share a session
-  unshare <session-id>                   Unshare a session
-  summarize <session-id> [--instruction] Start session summarization
-  init <session-id> [--analyze]          Initialize session (analyze & AGENTS.md)
+  create [--title "title"] [--parent] [--json]
+                                         Create a new session
+  update <session-id> [--title "new"] [--json]
+                                         Update session properties
+  delete <session-id> [--json]           Delete a session
+  abort <session-id> [--json]            Abort a running session
+  share <session-id> [--json]            Share a session
+  unshare <session-id> [--json]          Unshare a session
+  summarize <session-id> --model provider/model [--json]
+                                         Start session summarization
+  init <session-id> --message-id <id> --model provider/model [--json]
+                                         Initialize a session from a message/model
 
 Messages:
   messages <session-id> [--limit N]      List messages in session
   message <session-id> <message-id>      Get single message details
 
 Interaction:
-  prompt <session-id> <message> [--no-reply] [--output-format]
+  prompt <session-id> <message> [--no-reply]
   command <session-id> <command> [args]  Send command to session
-  shell <session-id> <command>           Run shell command in session
+  shell <session-id> <command> [--agent NAME]
+                                         Run a shell command in session
 
 History:
-  revert <session-id> <message-id>       Revert a message
-  unrevert <session-id>                  Restore reverted messages
+  revert <session-id> <message-id> [--json]
+                                         Revert a message
+  unrevert <session-id> [--json]         Restore reverted messages
 
 Permissions:
-  permission <session-id> <permission-id> <allow|deny|allow-session|deny-session>
+  permission <session-id> <permission-id> <once|always|reject> [--json]
+                                         Aliases: allow=once, allow-session=always,
+                                         deny/deny-session/reject=reject
 
 Statistics:
   stats [--json]                         Show session statistics
@@ -864,7 +1093,6 @@ Options:
   --json         Output as JSON
   --limit N      Limit results
   --no-reply     Don't wait for AI response (prompt only)
-  --output-format  Request structured output format
 
 Environment:
   OPENCODE_BASE_URL   Server URL (default: http://localhost:4096)
@@ -875,6 +1103,7 @@ Examples:
   opx-session messages ses_abc123 --json
   opx-session create --title "test" --parent ses_xyz
   opx-session prompt ses_abc123 "hello" --no-reply
+  opx-session summarize ses_abc123 --model github-copilot/gpt-4.1
   opx-session stats
 `);
 }
@@ -949,6 +1178,7 @@ async function main(): Promise<void> {
         await cmdCreate({
           title: options.title as string | undefined,
           parent: options.parent as string | undefined,
+          json: !!options.json,
         });
         break;
         
@@ -959,6 +1189,7 @@ async function main(): Promise<void> {
         }
         await cmdUpdate(positional[0], {
           title: options.title as string | undefined,
+          json: !!options.json,
         });
         break;
         
@@ -967,7 +1198,7 @@ async function main(): Promise<void> {
           console.error("Error: session ID required");
           process.exit(1);
         }
-        await cmdDelete(positional[0]);
+        await cmdDelete(positional[0], { json: !!options.json });
         break;
         
       case "abort":
@@ -975,7 +1206,7 @@ async function main(): Promise<void> {
           console.error("Error: session ID required");
           process.exit(1);
         }
-        await cmdAbort(positional[0]);
+        await cmdAbort(positional[0], { json: !!options.json });
         break;
         
       case "share":
@@ -983,7 +1214,7 @@ async function main(): Promise<void> {
           console.error("Error: session ID required");
           process.exit(1);
         }
-        await cmdShare(positional[0]);
+        await cmdShare(positional[0], { json: !!options.json });
         break;
         
       case "unshare":
@@ -991,7 +1222,7 @@ async function main(): Promise<void> {
           console.error("Error: session ID required");
           process.exit(1);
         }
-        await cmdUnshare(positional[0]);
+        await cmdUnshare(positional[0], { json: !!options.json });
         break;
         
       case "summarize":
@@ -1000,7 +1231,8 @@ async function main(): Promise<void> {
           process.exit(1);
         }
         await cmdSummarize(positional[0], {
-          instruction: options.instruction as string | undefined,
+          model: options.model as string | undefined,
+          json: !!options.json,
         });
         break;
         
@@ -1010,8 +1242,11 @@ async function main(): Promise<void> {
           process.exit(1);
         }
         await cmdInit(positional[0], {
-          analyze: !!options.analyze,
-          createAgentsMd: !!options["create-agents-md"] || !!options.createAgentsMd,
+          messageID:
+            (options["message-id"] as string | undefined) ??
+            (options.messageID as string | undefined),
+          model: options.model as string | undefined,
+          json: !!options.json,
         });
         break;
         
@@ -1058,7 +1293,9 @@ async function main(): Promise<void> {
           console.error("Error: session ID and command required");
           process.exit(1);
         }
-        await cmdShell(positional[0], positional[1]);
+        await cmdShell(positional[0], positional[1], {
+          agent: options.agent as string | undefined,
+        });
         break;
         
       case "revert":
@@ -1066,7 +1303,7 @@ async function main(): Promise<void> {
           console.error("Error: session ID and message ID required");
           process.exit(1);
         }
-        await cmdRevert(positional[0], positional[1]);
+        await cmdRevert(positional[0], positional[1], { json: !!options.json });
         break;
         
       case "unrevert":
@@ -1074,7 +1311,7 @@ async function main(): Promise<void> {
           console.error("Error: session ID required");
           process.exit(1);
         }
-        await cmdUnrevert(positional[0]);
+        await cmdUnrevert(positional[0], { json: !!options.json });
         break;
         
       case "permission":
@@ -1085,7 +1322,15 @@ async function main(): Promise<void> {
         await cmdPermission(
           positional[0],
           positional[1],
-          positional[2] as "allow" | "deny" | "allow-session" | "deny-session"
+          positional[2] as
+            | "allow"
+            | "deny"
+            | "allow-session"
+            | "deny-session"
+            | "once"
+            | "always"
+            | "reject",
+          { json: !!options.json },
         );
         break;
         
