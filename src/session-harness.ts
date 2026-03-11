@@ -14,7 +14,7 @@
  *   messages, message
  *   prompt, command, shell
  *   revert, unrevert
- *   init, permission
+ *   init, permissions, permission
  *   stats
  */
 
@@ -101,6 +101,19 @@ type PromptResult =
       info: Message;
       parts: Part[];
     };
+
+interface PermissionRequest {
+  id: string;
+  sessionID: string;
+  permission: string;
+  patterns: string[];
+  metadata: Record<string, unknown>;
+  always: string[];
+  tool?: {
+    messageID: string;
+    callID: string;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // API Client
@@ -494,9 +507,14 @@ async function initSession(
   }
 }
 
+// permission.list()
+async function listPermissions(): Promise<PermissionRequest[]> {
+  return (await apiRequest<PermissionRequest[]>("/permission")) ?? [];
+}
+
 // postSessionByIdPermissionsByPermissionId({ path, body })
 async function respondToPermission(
-  sessionID: string,
+  _sessionID: string,
   permissionID: string,
   response:
     | "allow"
@@ -508,9 +526,9 @@ async function respondToPermission(
     | "reject"
 ): Promise<boolean> {
   try {
-    return await apiRequest<boolean>(`/session/${sessionID}/permissions/${permissionID}`, {
+    return await apiRequest<boolean>(`/permission/${permissionID}/reply`, {
       method: "POST",
-      body: JSON.stringify({ response: mapPermissionResponse(response) }),
+      body: JSON.stringify({ reply: mapPermissionResponse(response) }),
     });
   } catch (error: any) {
     if (error.message?.includes("404")) {
@@ -981,6 +999,40 @@ async function cmdInit(
   console.log(`Initialized session: ${sessionID}`);
 }
 
+async function cmdPermissions(options: {
+  session?: string;
+  json?: boolean;
+}): Promise<void> {
+  const permissions = await listPermissions();
+  const filtered = options.session
+    ? permissions.filter((item) => item.sessionID === options.session)
+    : permissions;
+
+  if (options.json) {
+    console.log(JSON.stringify(filtered, null, 2));
+    return;
+  }
+
+  if (filtered.length === 0) {
+    console.log("No pending permissions.");
+    return;
+  }
+
+  for (const request of filtered) {
+    console.log(`Permission: ${request.id}`);
+    console.log(`  Session:    ${request.sessionID}`);
+    console.log(`  Kind:       ${request.permission}`);
+    console.log(`  Patterns:   ${request.patterns.join(", ")}`);
+    if (request.tool) {
+      console.log(`  Tool:       ${request.tool.callID} (${request.tool.messageID})`);
+    }
+    if (Object.keys(request.metadata).length > 0) {
+      console.log(`  Metadata:   ${JSON.stringify(request.metadata)}`);
+    }
+    console.log();
+  }
+}
+
 async function cmdPermission(
   sessionID: string,
   permissionID: string,
@@ -1065,6 +1117,7 @@ Session Management:
                                          Start session summarization
   init <session-id> --message-id <id> --model provider/model [--json]
                                          Initialize a session from a message/model
+  permissions [--session <id>] [--json] List pending permission requests
 
 Messages:
   messages <session-id> [--limit N]      List messages in session
@@ -1246,6 +1299,13 @@ async function main(): Promise<void> {
             (options["message-id"] as string | undefined) ??
             (options.messageID as string | undefined),
           model: options.model as string | undefined,
+          json: !!options.json,
+        });
+        break;
+
+      case "permissions":
+        await cmdPermissions({
+          session: options.session as string | undefined,
           json: !!options.json,
         });
         break;

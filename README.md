@@ -33,3 +33,17 @@ npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opx
 - `OPENCODE_BASE_URL`: defaults to `http://127.0.0.1:4096`
 - `OPENCODE_SERVER_USERNAME`: defaults to `opencode`
 - `OPENCODE_SERVER_PASSWORD`: is optional
+
+`opx` and `opx-session` always target `OPENCODE_BASE_URL`, so they can attach to any
+OpenCode server you start yourself. For repo-local workflow tests, prefer a dedicated
+custom-port server started inside that repo's `direnv`/config surface instead of the
+shared default instance.
+
+```bash
+direnv exec /path/to/plugin \
+  /home/dzack/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4198
+
+OPENCODE_BASE_URL=http://127.0.0.1:4198 \
+  npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+  opx-session list --json
+```
