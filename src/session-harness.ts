@@ -43,6 +43,8 @@ if (OPENCODE_API_KEY) {
 
 interface Session {
   id: string;
+  directory?: string;
+  workspaceID?: string;
   title: string;
   time: {
     created: number;
@@ -119,14 +121,56 @@ interface PermissionRequest {
 // API Client
 // ---------------------------------------------------------------------------
 
+function encodeDirectoryHeader(directory: string): string {
+  return /[^\x00-\x7F]/.test(directory)
+    ? encodeURIComponent(directory)
+    : directory;
+}
+
+function normalizeHeaders(input?: HeadersInit): Record<string, string> {
+  if (!input) {
+    return {};
+  }
+  if (input instanceof Headers) {
+    return Object.fromEntries(input.entries());
+  }
+  if (Array.isArray(input)) {
+    return Object.fromEntries(input);
+  }
+  return { ...input };
+}
+
+function withBaseHeaders(input?: HeadersInit): Record<string, string> {
+  return {
+    ...headers,
+    ...normalizeHeaders(input),
+  };
+}
+
+function withSessionContextHeaders(
+  input: HeadersInit | undefined,
+  session:
+    | Pick<Session, "directory" | "workspaceID">
+    | null,
+): Record<string, string> {
+  const next = withBaseHeaders(input);
+  if (!session) {
+    return next;
+  }
+  if (session.directory) {
+    next["x-opencode-directory"] = encodeDirectoryHeader(session.directory);
+  }
+  if (session.workspaceID) {
+    next["x-opencode-workspace"] = session.workspaceID;
+  }
+  return next;
+}
+
 async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
   const response = await fetch(url, {
     ...options,
-    headers: {
-      ...headers,
-      ...options?.headers,
-    },
+    headers: withBaseHeaders(options?.headers),
   });
 
   if (!response.ok) {
@@ -141,6 +185,18 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
   return response.json() as Promise<T>;
 }
 
+async function sessionRequest<T>(
+  sessionID: string,
+  endpoint: string,
+  options?: RequestInit,
+): Promise<T> {
+  const session = await getSession(sessionID);
+  return apiRequest<T>(endpoint, {
+    ...options,
+    headers: withSessionContextHeaders(options?.headers, session),
+  });
+}
+
 async function promptAsyncRequest(
   sessionID: string,
   body: Record<string, unknown>,
@@ -149,7 +205,7 @@ async function promptAsyncRequest(
     `${API_BASE}/session/${encodeURIComponent(sessionID)}/prompt_async`,
     {
       method: "POST",
-      headers,
+      headers: withSessionContextHeaders(undefined, await getSession(sessionID)),
       body: JSON.stringify(body),
     },
   );
@@ -226,7 +282,10 @@ async function getSession(sessionID: string): Promise<Session | null> {
 // session.children({ path: { id } })
 async function getChildSessions(sessionID: string): Promise<Session[]> {
   try {
-    const data = await apiRequest<Session[]>(`/session/${sessionID}/children`);
+    const data = await sessionRequest<Session[]>(
+      sessionID,
+      `/session/${sessionID}/children`,
+    );
     return (data ?? []).sort((a, b) => b.time.updated - a.time.updated);
   } catch (error: any) {
     if (error.message?.includes("404")) {
@@ -238,8 +297,11 @@ async function getChildSessions(sessionID: string): Promise<Session[]> {
 
 // session.create({ body })
 async function createSession(options?: { title?: string; parentID?: string }): Promise<Session> {
+  const parent = options?.parentID ? await getSession(options.parentID) : null;
+  const context = parent ?? { directory: process.cwd() };
   const data = await apiRequest<Session>("/session", {
     method: "POST",
+    headers: withSessionContextHeaders(undefined, context),
     body: JSON.stringify({
       title: options?.title ?? `session-${Date.now()}`,
       parentID: options?.parentID,
@@ -255,7 +317,7 @@ async function createSession(options?: { title?: string; parentID?: string }): P
 
 // session.update({ path: { id }, body })
 async function updateSession(sessionID: string, updates: { title?: string; [key: string]: any }): Promise<Session> {
-  const data = await apiRequest<Session>(`/session/${sessionID}`, {
+  const data = await sessionRequest<Session>(sessionID, `/session/${sessionID}`, {
     method: "PATCH",
     body: JSON.stringify(updates),
   });
@@ -270,7 +332,7 @@ async function updateSession(sessionID: string, updates: { title?: string; [key:
 // session.delete({ path: { id } })
 async function deleteSession(sessionID: string): Promise<boolean> {
   try {
-    return await apiRequest<boolean>(`/session/${sessionID}`, {
+    return await sessionRequest<boolean>(sessionID, `/session/${sessionID}`, {
       method: "DELETE",
     });
   } catch (error: any) {
@@ -284,7 +346,7 @@ async function deleteSession(sessionID: string): Promise<boolean> {
 // session.abort({ path: { id } })
 async function abortSession(sessionID: string): Promise<boolean> {
   try {
-    return await apiRequest<boolean>(`/session/${sessionID}/abort`, {
+    return await sessionRequest<boolean>(sessionID, `/session/${sessionID}/abort`, {
       method: "POST",
     });
   } catch (error: any) {
@@ -297,7 +359,7 @@ async function abortSession(sessionID: string): Promise<boolean> {
 
 // session.share({ path: { id } })
 async function shareSession(sessionID: string): Promise<Session> {
-  const data = await apiRequest<Session>(`/session/${sessionID}/share`, {
+  const data = await sessionRequest<Session>(sessionID, `/session/${sessionID}/share`, {
     method: "POST",
   });
   
@@ -310,7 +372,7 @@ async function shareSession(sessionID: string): Promise<Session> {
 
 // session.unshare({ path: { id } })
 async function unshareSession(sessionID: string): Promise<Session> {
-  const data = await apiRequest<Session>(`/session/${sessionID}/share`, {
+  const data = await sessionRequest<Session>(sessionID, `/session/${sessionID}/share`, {
     method: "DELETE",
   });
   
@@ -328,7 +390,7 @@ async function summarizeSession(
 ): Promise<boolean> {
   try {
     const model = parseModelRef(options.model);
-    await apiRequest<boolean>(`/session/${sessionID}/summarize`, {
+    await sessionRequest<boolean>(sessionID, `/session/${sessionID}/summarize`, {
       method: "POST",
       body: JSON.stringify(model),
     });
@@ -343,8 +405,9 @@ async function summarizeSession(
 
 // session.messages({ path: { id } })
 async function getMessages(sessionID: string): Promise<Array<{ info: Message; parts: Part[] }>> {
-  const data = await apiRequest<Array<{ info: Message; parts: Part[] }>>(
-    `/session/${sessionID}/message`
+  const data = await sessionRequest<Array<{ info: Message; parts: Part[] }>>(
+    sessionID,
+    `/session/${sessionID}/message`,
   );
   return data ?? [];
 }
@@ -352,8 +415,9 @@ async function getMessages(sessionID: string): Promise<Array<{ info: Message; pa
 // session.message({ path: { id, messageId } })
 async function getMessage(sessionID: string, messageID: string): Promise<{ info: Message; parts: Part[] } | null> {
   try {
-    const data = await apiRequest<{ info: Message; parts: Part[] }>(
-      `/session/${sessionID}/message/${messageID}`
+    const data = await sessionRequest<{ info: Message; parts: Part[] }>(
+      sessionID,
+      `/session/${sessionID}/message/${messageID}`,
     );
     return data ?? null;
   } catch (error: any) {
@@ -383,7 +447,8 @@ async function sendPrompt(
     return { queued: true, noReply: true };
   }
 
-  const data = await apiRequest<{ info: Message; parts: Part[] }>(
+  const data = await sessionRequest<{ info: Message; parts: Part[] }>(
+    sessionID,
     `/session/${sessionID}/message`,
     {
       method: "POST",
@@ -406,7 +471,8 @@ async function sendCommand(
   command: string,
   args?: string[]
 ): Promise<{ info: AssistantMessage; parts: Part[] }> {
-  const data = await apiRequest<{ info: AssistantMessage; parts: Part[] }>(
+  const data = await sessionRequest<{ info: AssistantMessage; parts: Part[] }>(
+    sessionID,
     `/session/${sessionID}/command`,
     {
       method: "POST",
@@ -430,7 +496,8 @@ async function runShell(
   command: string,
   options?: { agent?: string }
 ): Promise<AssistantMessage> {
-  const data = await apiRequest<AssistantMessage>(
+  const data = await sessionRequest<AssistantMessage>(
+    sessionID,
     `/session/${sessionID}/shell`,
     {
       method: "POST",
@@ -450,7 +517,8 @@ async function runShell(
 
 // session.revert({ path: { id }, body })
 async function revertMessage(sessionID: string, messageID: string): Promise<Session> {
-  const data = await apiRequest<Session>(
+  const data = await sessionRequest<Session>(
+    sessionID,
     `/session/${sessionID}/revert`,
     {
       method: "POST",
@@ -467,7 +535,8 @@ async function revertMessage(sessionID: string, messageID: string): Promise<Sess
 
 // session.unrevert({ path: { id } })
 async function unrevertSession(sessionID: string): Promise<Session> {
-  const data = await apiRequest<Session>(
+  const data = await sessionRequest<Session>(
+    sessionID,
     `/session/${sessionID}/unrevert`,
     {
       method: "POST",
@@ -491,7 +560,7 @@ async function initSession(
       throw new Error("init requires --message-id <message-id>.");
     }
     const model = parseModelRef(options.model);
-    await apiRequest<boolean>(`/session/${sessionID}/init`, {
+    await sessionRequest<boolean>(sessionID, `/session/${sessionID}/init`, {
       method: "POST",
       body: JSON.stringify({
         messageID: options.messageID,
@@ -508,13 +577,21 @@ async function initSession(
 }
 
 // permission.list()
-async function listPermissions(): Promise<PermissionRequest[]> {
-  return (await apiRequest<PermissionRequest[]>("/permission")) ?? [];
+async function listPermissions(sessionID?: string): Promise<PermissionRequest[]> {
+  if (!sessionID) {
+    return (await apiRequest<PermissionRequest[]>("/permission")) ?? [];
+  }
+  const session = await getSession(sessionID);
+  return (
+    (await apiRequest<PermissionRequest[]>("/permission", {
+      headers: withSessionContextHeaders(undefined, session),
+    })) ?? []
+  );
 }
 
 // postSessionByIdPermissionsByPermissionId({ path, body })
 async function respondToPermission(
-  _sessionID: string,
+  sessionID: string,
   permissionID: string,
   response:
     | "allow"
@@ -526,8 +603,10 @@ async function respondToPermission(
     | "reject"
 ): Promise<boolean> {
   try {
+    const session = await getSession(sessionID);
     return await apiRequest<boolean>(`/permission/${permissionID}/reply`, {
       method: "POST",
+      headers: withSessionContextHeaders(undefined, session),
       body: JSON.stringify({ reply: mapPermissionResponse(response) }),
     });
   } catch (error: any) {
@@ -1003,7 +1082,7 @@ async function cmdPermissions(options: {
   session?: string;
   json?: boolean;
 }): Promise<void> {
-  const permissions = await listPermissions();
+  const permissions = await listPermissions(options.session);
   const filtered = options.session
     ? permissions.filter((item) => item.sessionID === options.session)
     : permissions;

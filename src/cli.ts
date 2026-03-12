@@ -19,6 +19,11 @@ type KnownLimitPattern = {
   example_expected_substring: string;
 };
 
+type SessionContext = {
+  directory?: string;
+  workspaceID?: string;
+};
+
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
@@ -320,6 +325,101 @@ function compactLogLine(line: string, maxLen = 320): string {
 // Client / HTTP helpers
 // ---------------------------------------------------------------------------
 
+function encodeDirectoryHeader(directory: string): string {
+  return /[^\x00-\x7F]/.test(directory)
+    ? encodeURIComponent(directory)
+    : directory;
+}
+
+function applySessionContextHeaders(
+  input: Record<string, string>,
+  context?: SessionContext | null,
+): Record<string, string> {
+  const headers = { ...input };
+  if (!context) return headers;
+  if (context.directory) {
+    headers["x-opencode-directory"] = encodeDirectoryHeader(context.directory);
+  }
+  if (context.workspaceID) {
+    headers["x-opencode-workspace"] = context.workspaceID;
+  }
+  return headers;
+}
+
+function sessionSdkOptions(context?: SessionContext | null): {
+  headers?: Record<string, string>;
+  query?: { directory: string };
+} {
+  if (!context) {
+    return {};
+  }
+
+  const headers = applySessionContextHeaders({}, context);
+  return {
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(context.directory ? { query: { directory: context.directory } } : {}),
+  };
+}
+
+function currentSessionContext(): SessionContext {
+  return { directory: process.cwd() };
+}
+
+function sessionContextFromSession(
+  session: { directory?: string; workspaceID?: string } | null | undefined,
+): SessionContext | null {
+  if (!session) return null;
+  if (!session.directory && !session.workspaceID) return null;
+  return {
+    directory: session.directory,
+    workspaceID: session.workspaceID,
+  };
+}
+
+async function fetchSessionContext(
+  sessionID: string,
+): Promise<SessionContext | null> {
+  const headers: Record<string, string> = {};
+  if (AUTH_HEADER) {
+    headers.authorization = AUTH_HEADER;
+  }
+  const response = await fetch(
+    `${RESOLVED_BASE_URL}/session/${encodeURIComponent(sessionID)}`,
+    {
+      headers,
+    },
+  );
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`session lookup failed (${response.status}): ${text}`);
+  }
+  const data = (await response.json()) as
+    | { directory?: string; workspaceID?: string }
+    | null;
+  return sessionContextFromSession(data);
+}
+
+async function resolveSessionContext(
+  sessionID: string,
+  context?: SessionContext | null,
+): Promise<SessionContext | null> {
+  return context ?? (await fetchSessionContext(sessionID));
+}
+
+async function makeSessionClient(
+  sessionID: string,
+  context?: SessionContext | null,
+) {
+  const resolved = await resolveSessionContext(sessionID, context);
+  return {
+    context: resolved,
+    client: makeClient(),
+  };
+}
+
 function makeClient() {
   let baseUrl = process.env.OPENCODE_BASE_URL ?? "http://127.0.0.1:4096";
   const username = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
@@ -339,10 +439,14 @@ function makeClient() {
 async function promptAsyncRequest(
   sessionID: string,
   body: Record<string, unknown>,
+  context?: SessionContext | null,
 ) {
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
+  const headers = applySessionContextHeaders(
+    {
+      "content-type": "application/json",
+    },
+    await resolveSessionContext(sessionID, context),
+  );
   if (AUTH_HEADER) headers.authorization = AUTH_HEADER;
 
   const res = await fetch(
@@ -417,6 +521,7 @@ async function waitForIdle(
   sessionID: string,
   lingerSec: number,
   timeoutSec: number,
+  context?: SessionContext | null,
 ): Promise<WaitResult> {
   const startMs = Date.now();
   const timeoutMs = timeoutSec * 1000;
@@ -446,11 +551,11 @@ async function waitForIdle(
   // 1. SSE event listener for message.updated / session.error
   // 2. Periodic poll to detect stable idle (no new messages for 2s)
 
-  // No directory filter — we filter by sessionID in the handler.
-  // Using process.cwd() would silently drop all events: the server defaults
-  // session directories to its own working directory, not the caller's.
+  // The caller is responsible for passing a client scoped to the session's
+  // stored directory/workspace so the event stream matches the live session.
   const stream = await client.event.subscribe({
     signal: controller.signal,
+    ...sessionSdkOptions(context),
   });
 
   const sseCollector = (async () => {
@@ -556,20 +661,32 @@ async function cmdRun(client: any, args: KV): Promise<void> {
   const timeoutSec = Number(getString(args, "timeout", "180"));
   const keep = hasFlag(args, "keep");
 
+  const creationContext = currentSessionContext();
   const created = await client.session.create({
+    ...sessionSdkOptions(creationContext),
     body: { title: `opx:${Date.now()}` },
   });
   const sessionID = created.data?.id;
   if (!sessionID) throw new Error("Failed to create session");
+  const sessionContext =
+    sessionContextFromSession(created.data) ??
+    (await fetchSessionContext(sessionID));
+  const sessionClient = makeClient();
 
   // Send prompt async and wait via SSE
   await promptAsyncRequest(sessionID, {
     agent,
     model,
     parts: [{ type: "text", text: prompt }],
-  });
+  }, sessionContext);
 
-  const result = await waitForIdle(client, sessionID, lingerSec, timeoutSec);
+  const result = await waitForIdle(
+    sessionClient,
+    sessionID,
+    lingerSec,
+    timeoutSec,
+    sessionContext,
+  );
 
   // Print transcript
   const transcript = await generateTranscript(sessionID);
@@ -578,7 +695,10 @@ async function cmdRun(client: any, args: KV): Promise<void> {
   // Session cleanup — delete unless --keep was explicitly passed
   if (!keep) {
     try {
-      await client.session.delete({ path: { id: sessionID } });
+      await sessionClient.session.delete({
+        ...sessionSdkOptions(sessionContext),
+        path: { id: sessionID },
+      });
     } catch {
       // best-effort
     }
@@ -604,14 +724,22 @@ async function cmdResume(client: any, args: KV): Promise<void> {
   const lingerSec = Number(getString(args, "linger", "0"));
   const timeoutSec = Number(getString(args, "timeout", "180"));
   const keep = hasFlag(args, "keep");
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(sessionID);
 
   await promptAsyncRequest(sessionID, {
     agent,
     model,
     parts: [{ type: "text", text: prompt }],
-  });
+  }, sessionContext);
 
-  const result = await waitForIdle(client, sessionID, lingerSec, timeoutSec);
+  const result = await waitForIdle(
+    sessionClient,
+    sessionID,
+    lingerSec,
+    timeoutSec,
+    sessionContext,
+  );
 
   const transcript = await generateTranscript(sessionID);
   process.stdout.write(transcript);
@@ -619,7 +747,10 @@ async function cmdResume(client: any, args: KV): Promise<void> {
   // Session cleanup — delete unless --keep was explicitly passed
   if (!keep) {
     try {
-      await client.session.delete({ path: { id: sessionID } });
+      await sessionClient.session.delete({
+        ...sessionSdkOptions(sessionContext),
+        path: { id: sessionID },
+      });
     } catch {
       // best-effort
     }
@@ -641,14 +772,24 @@ async function cmdResume(client: any, args: KV): Promise<void> {
 async function cmdSessionDelete(client: any, args: KV) {
   const session = getString(args, "session");
   if (!session) throw new Error("session delete requires --session");
-  await client.session.delete({ path: { id: session } });
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(session);
+  await sessionClient.session.delete({
+    ...sessionSdkOptions(sessionContext),
+    path: { id: session },
+  });
   console.log(session);
 }
 
 async function cmdSessionMessages(client: any, args: KV) {
   const session = getString(args, "session");
   if (!session) throw new Error("session messages requires --session");
-  const result = await client.session.messages({ path: { id: session } });
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(session);
+  const result = await sessionClient.session.messages({
+    ...sessionSdkOptions(sessionContext),
+    path: { id: session },
+  });
   console.log(JSON.stringify(result.data ?? [], null, 2));
 }
 
@@ -678,22 +819,31 @@ async function cmdProviderHealth(client: any, args: KV) {
   const parsed = parseModel(model);
   if (!parsed) throw new Error("Invalid model format — use provider/model");
 
+  const creationContext = currentSessionContext();
   const created = await client.session.create({
+    ...sessionSdkOptions(creationContext),
     body: { title: `opx-provider-health:${provider}:${Date.now()}` },
   });
   const sessionID = created.data?.id;
   if (!sessionID) throw new Error("Failed to create probe session");
+  const sessionContext =
+    sessionContextFromSession(created.data) ??
+    (await fetchSessionContext(sessionID));
+  const sessionClient = makeClient();
 
   await promptAsyncRequest(sessionID, {
     agent: "Minimal",
     model: parsed,
     parts: [{ type: "text", text: "Reply with ONLY: OK" }],
-  });
+  }, sessionContext);
 
-  const result = await waitForIdle(client, sessionID, 0, 60);
+  const result = await waitForIdle(sessionClient, sessionID, 0, 60, sessionContext);
 
   try {
-    await client.session.delete({ path: { id: sessionID } });
+    await sessionClient.session.delete({
+      ...sessionSdkOptions(sessionContext),
+      path: { id: sessionID },
+    });
   } catch {
     /* best-effort */
   }
@@ -722,7 +872,12 @@ async function cmdProviderHealth(client: any, args: KV) {
 async function cmdErrors(client: any, args: KV) {
   const session = getString(args, "session");
   if (!session) throw new Error("errors requires --session");
-  const result = await client.session.messages({ path: { id: session } });
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(session);
+  const result = await sessionClient.session.messages({
+    ...sessionSdkOptions(sessionContext),
+    path: { id: session },
+  });
   const rows = (result.data ?? [])
     .filter((m: any) => m.info?.role === "assistant" && m.info?.error)
     .map((m: any) => ({
@@ -745,7 +900,12 @@ async function cmdLimitErrors(client: any, args: KV) {
   const session = getString(args, "session");
   if (!session) throw new Error("limit-errors requires --session");
   const verbose = hasFlag(args, "verbose");
-  const result = await client.session.messages({ path: { id: session } });
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(session);
+  const result = await sessionClient.session.messages({
+    ...sessionSdkOptions(sessionContext),
+    path: { id: session },
+  });
   const all = (result.data ?? [])
     .filter((m: any) => m.info?.role === "assistant" && m.info?.error)
     .map((m: any) => ({
@@ -786,11 +946,16 @@ async function cmdProbeLimit(client: any, args: KV) {
   const model = parseModel(modelStr);
   if (!model) throw new Error("Invalid --model format");
 
+  const creationContext = currentSessionContext();
   const created = await client.session.create({
+    ...sessionSdkOptions(creationContext),
     body: { title: `opx-probe-limit:${modelStr}:${Date.now()}` },
   });
   const sessionID = created.data?.id;
   if (!sessionID) throw new Error("Failed to create probe session");
+  const sessionContext =
+    sessionContextFromSession(created.data) ??
+    (await fetchSessionContext(sessionID));
 
   await promptAsyncRequest(sessionID, {
     agent: getString(args, "agent", "Minimal"),
@@ -801,7 +966,7 @@ async function cmdProbeLimit(client: any, args: KV) {
         text: getString(args, "prompt", "Reply with ONLY OK."),
       },
     ],
-  });
+  }, sessionContext);
 
   console.log(sessionID);
 }
@@ -891,17 +1056,23 @@ async function cmdProbeLimitTrace(client: any, args: KV) {
   const verbose = hasFlag(args, "verbose");
   const includeAborted = hasFlag(args, "include-aborted");
 
+  const creationContext = currentSessionContext();
   const created = await client.session.create({
+    ...sessionSdkOptions(creationContext),
     body: { title: `opx-probe-limit-trace:${modelStr}:${Date.now()}` },
   });
   const sessionID = created.data?.id;
   if (!sessionID) throw new Error("Failed to create probe session");
+  const sessionContext =
+    sessionContextFromSession(created.data) ??
+    (await fetchSessionContext(sessionID));
+  const sessionClient = makeClient();
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
-  const stream = await client.event.subscribe({
+  const stream = await sessionClient.event.subscribe({
     signal: controller.signal,
-    query: { directory: process.cwd() },
+    ...sessionSdkOptions(sessionContext),
   });
 
   const rows: any[] = [];
@@ -947,7 +1118,7 @@ async function cmdProbeLimitTrace(client: any, args: KV) {
         text: getString(args, "prompt", "Reply with ONLY OK."),
       },
     ],
-  });
+  }, sessionContext);
 
   await collector;
   clearTimeout(timer);
@@ -990,17 +1161,22 @@ async function cmdTrace(client: any, args: KV) {
   const verbose = hasFlag(args, "verbose");
   const includeAborted = hasFlag(args, "include-aborted");
   const withServiceLog = !hasFlag(args, "no-service-log");
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(session);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
 
-  const stream = await client.event.subscribe({
+  const stream = await sessionClient.event.subscribe({
     signal: controller.signal,
-    query: { directory: process.cwd() },
+    ...sessionSdkOptions(sessionContext),
   });
 
   const rows: any[] = [];
-  const existing = await client.session.messages({ path: { id: session } });
+  const existing = await sessionClient.session.messages({
+    ...sessionSdkOptions(sessionContext),
+    path: { id: session },
+  });
   for (const msg of existing.data ?? []) {
     if (msg.info?.role !== "assistant" || !msg.info?.error) continue;
     rows.push(normalizeErrorRecord("message.history", session, msg.info));
@@ -1088,14 +1264,21 @@ async function cmdProbeAsyncCommand(client: any, args: KV) {
   const model = parseModel(modelStr);
   if (!model) throw new Error("Invalid --model format");
 
+  const creationContext = currentSessionContext();
   const created = await client.session.create({
+    ...sessionSdkOptions(creationContext),
     body: { title: `opx-probe-async-command:${Date.now()}` },
   });
   const sessionID = created.data?.id;
   if (!sessionID) throw new Error("Failed to create probe session");
+  const sessionContext =
+    sessionContextFromSession(created.data) ??
+    (await fetchSessionContext(sessionID));
+  const sessionClient = makeClient();
 
-  await client.session.prompt({
-    timeout: REQUEST_TIMEOUT_MS,
+  await sessionClient.session.prompt({
+    ...sessionSdkOptions(sessionContext),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     path: { id: sessionID },
     body: {
       agent: getString(args, "agent", "Minimal"),
@@ -1114,8 +1297,9 @@ async function cmdProbeAsyncCommand(client: any, args: KV) {
 
   const start = Date.now();
   while (Date.now() - start < 180000) {
-    const messages = await client.session.messages({
-      timeout: REQUEST_TIMEOUT_MS,
+    const messages = await sessionClient.session.messages({
+      ...sessionSdkOptions(sessionContext),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       path: { id: sessionID },
     });
     const tx = renderAssistantText(messages.data ?? []);
@@ -1136,14 +1320,21 @@ async function cmdProbeAsyncSubagent(client: any, args: KV) {
   const model = parseModel(modelStr);
   if (!model) throw new Error("Invalid --model format");
 
+  const creationContext = currentSessionContext();
   const created = await client.session.create({
+    ...sessionSdkOptions(creationContext),
     body: { title: `opx-probe-async-subagent:${Date.now()}` },
   });
   const sessionID = created.data?.id;
   if (!sessionID) throw new Error("Failed to create probe session");
+  const sessionContext =
+    sessionContextFromSession(created.data) ??
+    (await fetchSessionContext(sessionID));
+  const sessionClient = makeClient();
 
-  await client.session.prompt({
-    timeout: REQUEST_TIMEOUT_MS,
+  await sessionClient.session.prompt({
+    ...sessionSdkOptions(sessionContext),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     path: { id: sessionID },
     body: {
       agent: getString(args, "agent", "Minimal"),
@@ -1162,8 +1353,9 @@ async function cmdProbeAsyncSubagent(client: any, args: KV) {
 
   const start = Date.now();
   while (Date.now() - start < 180000) {
-    const messages = await client.session.messages({
-      timeout: REQUEST_TIMEOUT_MS,
+    const messages = await sessionClient.session.messages({
+      ...sessionSdkOptions(sessionContext),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       path: { id: sessionID },
     });
     const tx = renderAssistantText(messages.data ?? []);
