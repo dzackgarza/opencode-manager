@@ -19,6 +19,13 @@
  */
 
 import { $ } from "bun";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
+
+import {
+  renderTranscriptMarkdown,
+  type TranscriptExport,
+} from "./transcript";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -750,6 +757,84 @@ function formatMessage(msg: { info: Message; parts: Part[] }): string {
   return `${role}${details} @ ${time}`;
 }
 
+async function loadTranscriptExport(sessionID: string): Promise<TranscriptExport> {
+  const session = await getSession(sessionID);
+  if (!session) {
+    throw new Error(`Session not found: ${sessionID}`);
+  }
+
+  return {
+    info: session,
+    messages: await getMessages(sessionID),
+  };
+}
+
+async function loadTranscriptExportFile(
+  inputPath: string,
+): Promise<TranscriptExport> {
+  const resolvedPath = resolve(inputPath);
+  return JSON.parse(await Bun.file(resolvedPath).text()) as TranscriptExport;
+}
+
+async function renderSessionTranscript(
+  sessionID: string,
+  options?: { savedCopyPath?: string },
+): Promise<string> {
+  return renderTranscriptMarkdown(await loadTranscriptExport(sessionID), {
+    savedCopyPath: options?.savedCopyPath,
+  });
+}
+
+async function renderInputTranscript(
+  inputPath: string,
+  options?: { savedCopyPath?: string },
+): Promise<string> {
+  return renderTranscriptMarkdown(await loadTranscriptExportFile(inputPath), {
+    savedCopyPath: options?.savedCopyPath,
+  });
+}
+
+async function cmdTranscript(
+  target: { input?: string; sessionID?: string },
+  options: { output?: string; teeTemp?: boolean },
+): Promise<void> {
+  if (options.output && options.teeTemp) {
+    throw new Error("transcript accepts either --output <path> or --tee-temp, not both.");
+  }
+  if (!!target.sessionID === !!target.input) {
+    throw new Error("transcript requires exactly one of <session-id> or --input <path>.");
+  }
+
+  const teeLabel = target.sessionID
+    ? target.sessionID
+    : basename(target.input ?? "transcript.json").replace(/\.[^.]+$/, "");
+
+  const outputPath = options.output
+    ? resolve(options.output)
+    : options.teeTemp
+      ? join(tmpdir(), `opx-session-${teeLabel}-${Date.now()}.md`)
+      : undefined;
+
+  const transcript = target.sessionID
+    ? await renderSessionTranscript(target.sessionID, {
+        savedCopyPath: outputPath,
+      })
+    : await renderInputTranscript(target.input ?? "", {
+        savedCopyPath: outputPath,
+      });
+
+  if (outputPath) {
+    await Bun.write(outputPath, transcript);
+  }
+
+  if (!options.output || options.teeTemp) {
+    process.stdout.write(transcript);
+    return;
+  }
+
+  console.log(outputPath);
+}
+
 // ---------------------------------------------------------------------------
 // CLI Commands
 // ---------------------------------------------------------------------------
@@ -1201,6 +1286,10 @@ Session Management:
 Messages:
   messages <session-id> [--limit N]      List messages in session
   message <session-id> <message-id>      Get single message details
+  transcript <session-id> [--output PATH | --tee-temp]
+                                         Render a turn/step markdown transcript
+  transcript --input <export.json> [--output PATH | --tee-temp]
+                                         Render a saved export JSON transcript
 
 Interaction:
   prompt <session-id> <message> [--no-reply]
@@ -1224,7 +1313,10 @@ Statistics:
 Options:
   --json         Output as JSON
   --limit N      Limit results
+  --input PATH   Render transcript from an exported JSON file
   --no-reply     Don't wait for AI response (prompt only)
+  --output PATH  Save transcript to a file instead of streaming
+  --tee-temp     Stream transcript and also save it to a temp file
 
 Environment:
   OPENCODE_BASE_URL   Server URL (default: http://localhost:4096)
@@ -1233,6 +1325,9 @@ Environment:
 Examples:
   opx-session list --limit 10
   opx-session messages ses_abc123 --json
+  opx-session transcript ses_abc123
+  opx-session transcript --input ./session-export.json
+  opx-session transcript ses_abc123 --tee-temp
   opx-session create --title "test" --parent ses_xyz
   opx-session prompt ses_abc123 "hello" --no-reply
   opx-session summarize ses_abc123 --model github-copilot/gpt-4.1
@@ -1407,6 +1502,25 @@ async function main(): Promise<void> {
         }
         await cmdMessage(positional[0], positional[1], { json: !!options.json });
         break;
+
+      case "transcript":
+        if (!!positional[0] === !!options.input) {
+          console.error(
+            "Error: provide exactly one of <session-id> or --input <path>",
+          );
+          process.exit(1);
+        }
+        await cmdTranscript(
+          {
+            input: options.input as string | undefined,
+            sessionID: positional[0],
+          },
+          {
+          output: options.output as string | undefined,
+          teeTemp: !!options["tee-temp"] || !!options.teeTemp,
+          },
+        );
+        break;
         
       case "prompt":
         if (!positional[0] || !positional[1]) {
@@ -1509,6 +1623,8 @@ export {
   unrevertSession,
   initSession,
   respondToPermission,
+  renderInputTranscript,
+  renderSessionTranscript,
   getStats,
 };
 

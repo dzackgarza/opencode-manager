@@ -1,0 +1,63 @@
+{
+  "info": {
+    "title": "Fixture Session",
+    "id": "ses_fixture"
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1741488000000
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Say hello."
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "model": {
+          "modelID": "github-copilot/gpt-4.1"
+        },
+        "time": {
+          "created": 1741488001000,
+          "completed": 1741488004000
+        },
+        "tokens": {
+          "total": 42,
+          "input": 20,
+          "output": 22
+        }
+      },
+      "parts": [
+        {
+          "type": "reasoning",
+          "text": "Reason about whether a tool is needed."
+        },
+        {
+          "type": "tool",
+          "tool": "webfetch",
+          "state": {
+            "input": {
+              "url": "https://example.com"
+            },
+            "output": "example output",
+            "status": "success"
+          },
+          "timing": {
+            "latency_s": 0.42
+          }
+        },
+        {
+          "type": "text",
+          "text": "Hello."
+        }
+      ]
+    }
+  ]
+}

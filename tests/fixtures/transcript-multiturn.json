@@ -1,0 +1,298 @@
+{
+  "info": {
+    "id": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+    "slug": "cosmic-nebula",
+    "projectID": "86dcef4999c415c5f27a8a94fecf74c06354ca0c",
+    "directory": "/home/dzack/opencode-plugins/opencode-manager",
+    "title": "transcript-fixture",
+    "version": "1.2.24",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "time": {
+      "created": 1773318735314,
+      "updated": 1773332533878
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1773318747036
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "Interactive",
+        "model": {
+          "providerID": "github-copilot",
+          "modelID": "gpt-4.1"
+        },
+        "id": "msg_ce208b39b001HIw6MNc2rW3eM3",
+        "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Use introspection to get this session ID, then reply with SESSION_OK.",
+          "id": "prt_ce208b39f001eiIemrM2F3rVDY",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce208b39b001HIw6MNc2rW3eM3"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1773318747111,
+          "completed": 1773318751739
+        },
+        "parentID": "msg_ce208b39b001HIw6MNc2rW3eM3",
+        "modelID": "gpt-4.1",
+        "providerID": "github-copilot",
+        "mode": "Interactive",
+        "agent": "Interactive",
+        "path": {
+          "cwd": "/home/dzack/opencode-plugins/opencode-manager",
+          "root": "/home/dzack/opencode-plugins/opencode-manager"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 23753,
+          "input": 23742,
+          "output": 11,
+          "reasoning": 0,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls",
+        "id": "msg_ce208b3e6001huyKCc6pC6iD4m",
+        "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "snapshot": "62861b8700a29c823c94786a4d628fb54f214f95",
+          "id": "prt_ce208c519001ElaP3Wa6tAcGb8",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce208b3e6001huyKCc6pC6iD4m"
+        },
+        {
+          "type": "tool",
+          "callID": "call_jmkQHwOaHEfMh5yuQNxNPviM",
+          "tool": "introspection",
+          "state": {
+            "status": "completed",
+            "input": {},
+            "output": "Session ID: ses_31df77a2effeFkeVNZmfvgo5Mo\nTitle: transcript-fixture\nMessage ID: msg_ce208b3e6001huyKCc6pC6iD4m\nAgent: Interactive",
+            "title": "",
+            "metadata": {
+              "truncated": false
+            },
+            "time": {
+              "start": 1773318751525,
+              "end": 1773318751534
+            }
+          },
+          "id": "prt_ce208c51d001fuGu51eOsbwIs0",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce208b3e6001huyKCc6pC6iD4m"
+        },
+        {
+          "type": "step-finish",
+          "reason": "tool-calls",
+          "snapshot": "62861b8700a29c823c94786a4d628fb54f214f95",
+          "cost": 0,
+          "tokens": {
+            "total": 23753,
+            "input": 23742,
+            "output": 11,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "id": "prt_ce208c540001JODjavgfy1dIzx",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce208b3e6001huyKCc6pC6iD4m"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1773318751745,
+          "completed": 1773318755302
+        },
+        "parentID": "msg_ce208b39b001HIw6MNc2rW3eM3",
+        "modelID": "gpt-4.1",
+        "providerID": "github-copilot",
+        "mode": "Interactive",
+        "agent": "Interactive",
+        "path": {
+          "cwd": "/home/dzack/opencode-plugins/opencode-manager",
+          "root": "/home/dzack/opencode-plugins/opencode-manager"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 23819,
+          "input": 135,
+          "output": 4,
+          "reasoning": 0,
+          "cache": {
+            "read": 23680,
+            "write": 0
+          }
+        },
+        "finish": "stop",
+        "id": "msg_ce208c6010010KYbKmODrZO6GN",
+        "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "snapshot": "62861b8700a29c823c94786a4d628fb54f214f95",
+          "id": "prt_ce208d388001ImVlYY4xBzG7su",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce208c6010010KYbKmODrZO6GN"
+        },
+        {
+          "type": "text",
+          "text": "SESSION_OK",
+          "time": {
+            "start": 1773318755215,
+            "end": 1773318755215
+          },
+          "id": "prt_ce208d38a0015WzD8OTWA9u1kb",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce208c6010010KYbKmODrZO6GN"
+        },
+        {
+          "type": "step-finish",
+          "reason": "stop",
+          "snapshot": "62861b8700a29c823c94786a4d628fb54f214f95",
+          "cost": 0,
+          "tokens": {
+            "total": 23819,
+            "input": 135,
+            "output": 4,
+            "reasoning": 0,
+            "cache": {
+              "read": 23680,
+              "write": 0
+            }
+          },
+          "id": "prt_ce208d3930014r5OCZKYmE0EGl",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce208c6010010KYbKmODrZO6GN"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1773332529696
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "Interactive",
+        "model": {
+          "providerID": "github-copilot",
+          "modelID": "gpt-4.1"
+        },
+        "id": "msg_ce2db021b001A1tzxUDbXKqFYO",
+        "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Reply with ONLY SECOND_OK.",
+          "id": "prt_ce2db0226001lbpZLrZBQJ7STy",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce2db021b001A1tzxUDbXKqFYO"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1773332529874,
+          "completed": 1773332533836
+        },
+        "parentID": "msg_ce2db021b001A1tzxUDbXKqFYO",
+        "modelID": "gpt-4.1",
+        "providerID": "github-copilot",
+        "mode": "Interactive",
+        "agent": "Interactive",
+        "path": {
+          "cwd": "/home/dzack/opencode-plugins/opencode-manager",
+          "root": "/home/dzack/opencode-plugins/opencode-manager"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 23835,
+          "input": 23831,
+          "output": 4,
+          "reasoning": 0,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop",
+        "id": "msg_ce2db02d1001uQdTJMdkjqMTbM",
+        "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "snapshot": "62861b8700a29c823c94786a4d628fb54f214f95",
+          "id": "prt_ce2db11da001494Oe4wcL51Bkz",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce2db02d1001uQdTJMdkjqMTbM"
+        },
+        {
+          "type": "text",
+          "text": "SECOND_OK",
+          "time": {
+            "start": 1773332533743,
+            "end": 1773332533743
+          },
+          "id": "prt_ce2db11e4001xsiv4UojtYeGxl",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce2db02d1001uQdTJMdkjqMTbM"
+        },
+        {
+          "type": "step-finish",
+          "reason": "stop",
+          "snapshot": "62861b8700a29c823c94786a4d628fb54f214f95",
+          "cost": 0,
+          "tokens": {
+            "total": 23835,
+            "input": 23831,
+            "output": 4,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "id": "prt_ce2db11f8001HbM4WfJkZ1ChhA",
+          "sessionID": "ses_31df77a2effeFkeVNZmfvgo5Mo",
+          "messageID": "msg_ce2db02d1001uQdTJMdkjqMTbM"
+        }
+      ]
+    }
+  ]
+}

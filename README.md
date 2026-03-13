@@ -12,12 +12,10 @@ This package provides session management and automation through the former harne
 
 - `opx` manages run, resume, provider, and debug flows.
 - `opx-session` provides broader session control.
-
-Transcript rendering remains external and must be resolved through the following command:
-
-```bash
-uvx --from git+ssh://git@github.com/dzackgarza/opencode-transcripts.git opencode-transcript
-```
+- `opx-session transcript <session-id>` renders a turn/step markdown transcript
+  from the configured OpenCode server without relying on an external package.
+- `opencode-transcript` remains available as a compatibility entrypoint for
+  transcript-only workflows, including `--input /path/to/export.json`.
 
 ## Run
 
@@ -26,6 +24,26 @@ Running these tools requires `npx`, `bun`, and GitHub SSH access to the private 
 ```bash
 npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opx --help
 npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opx-session --help
+npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opencode-transcript --help
+```
+
+Transcript examples:
+
+```bash
+npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+  opx-session transcript ses_abc123
+
+npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+  opx-session transcript ses_abc123 --output /tmp/session.md
+
+npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+  opx-session transcript ses_abc123 --tee-temp
+
+npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+  opx-session transcript --input /tmp/session-export.json
+
+npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+  opencode-transcript --input /tmp/session-export.json
 ```
 
 ## Environment

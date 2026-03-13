@@ -15,12 +15,15 @@
   "bin": {
     "opencode-manager": "./bin/opx",
     "opx": "./bin/opx",
-    "opx-session": "./bin/opx-session"
+    "opx-session": "./bin/opx-session",
+    "opencode-transcript": "./bin/opencode-transcript"
   },
   "scripts": {
     "opx": "bun run src/cli.ts",
     "opx-session": "bun run src/session-harness.ts",
-    "check": "tsc --noEmit -p tsconfig.json"
+    "check": "tsc --noEmit -p tsconfig.json",
+    "opencode-transcript": "bun run src/transcript-cli.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@opencode-ai/sdk": "^0.7.4"

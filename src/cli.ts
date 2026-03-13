@@ -2,12 +2,11 @@
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { spawn } from "child_process";
 
+import { renderSessionTranscript } from "./session-harness";
+
 const REQUEST_TIMEOUT_MS = 180000;
 let RESOLVED_BASE_URL = "http://127.0.0.1:4096";
 let AUTH_HEADER = "";
-
-const TRANSCRIPT_PACKAGE_SPEC =
-  "git+ssh://git@github.com/dzackgarza/opencode-transcripts.git";
 
 type KV = Record<string, string | boolean>;
 
@@ -469,36 +468,12 @@ async function promptAsyncRequest(
 // ---------------------------------------------------------------------------
 
 async function generateTranscript(sessionID: string): Promise<string> {
-  const result = await new Promise<{
-    code: number | null;
-    out: string;
-    failedToSpawn: boolean;
-  }>((resolve) => {
-    const child = spawn(
-      "uvx",
-      ["--from", TRANSCRIPT_PACKAGE_SPEC, "opencode-transcript", sessionID],
-      {
-        env: process.env,
-      },
-    );
-    let out = "";
-    child.stdout.on("data", (d) => {
-      out += d.toString();
-    });
-    child.stderr.on("data", (d) => {
-      out += d.toString();
-    });
-    child.on("close", (code) => resolve({ code, out, failedToSpawn: false }));
-    child.on("error", () => resolve({ code: null, out: "", failedToSpawn: true }));
-  });
-
-  if (!result.failedToSpawn && result.code === 0 && result.out.trim()) {
-    return result.out;
+  try {
+    return await renderSessionTranscript(sessionID);
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `[transcript unavailable for ${sessionID}] ${message}`;
   }
-
-  return result.out.trim()
-    ? `[transcript unavailable for ${sessionID}] ${result.out.trim()}`
-    : `[transcript unavailable for ${sessionID}]`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1412,7 +1387,7 @@ function help() {
     "  OPENCODE_BASE_URL (default http://127.0.0.1:4096)",
     "  OPENCODE_SERVER_USERNAME (default opencode)",
     "  OPENCODE_SERVER_PASSWORD (optional)",
-    `  Transcript renderer: uvx --from ${TRANSCRIPT_PACKAGE_SPEC} opencode-transcript`,
+    "  Transcript renderer: opx-session transcript <session-id>",
   ];
   console.log(text.join("\n"));
 }
