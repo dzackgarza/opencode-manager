@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
 import {
+  renderTranscriptJson,
   renderTranscriptMarkdown,
   type TranscriptExport,
 } from "./transcript";
@@ -110,6 +111,12 @@ type PromptResult =
       info: Message;
       parts: Part[];
     };
+
+type PromptOptions = {
+  agent?: string;
+  noReply?: boolean;
+  outputFormat?: string;
+};
 
 interface PermissionRequest {
   id: string;
@@ -436,10 +443,17 @@ async function getMessage(sessionID: string, messageID: string): Promise<{ info:
 }
 
 // session.prompt({ path: { id }, body })
+function buildPromptRequestBody(message: string, options?: { agent?: string }) {
+  return {
+    ...(options?.agent ? { agent: options.agent } : {}),
+    parts: [{ type: "text", text: message }],
+  };
+}
+
 async function sendPrompt(
   sessionID: string,
   message: string,
-  options?: { noReply?: boolean; outputFormat?: string }
+  options?: PromptOptions,
 ): Promise<PromptResult> {
   if (options?.outputFormat) {
     throw new Error(
@@ -448,9 +462,7 @@ async function sendPrompt(
   }
 
   if (options?.noReply) {
-    await promptAsyncRequest(sessionID, {
-      parts: [{ type: "text", text: message }],
-    });
+    await promptAsyncRequest(sessionID, buildPromptRequestBody(message, options));
     return { queued: true, noReply: true };
   }
 
@@ -459,9 +471,7 @@ async function sendPrompt(
     `/session/${sessionID}/message`,
     {
       method: "POST",
-      body: JSON.stringify({
-        parts: [{ type: "text", text: message }],
-      }),
+      body: JSON.stringify(buildPromptRequestBody(message, options)),
     },
   );
 
@@ -778,25 +788,33 @@ async function loadTranscriptExportFile(
 
 async function renderSessionTranscript(
   sessionID: string,
-  options?: { savedCopyPath?: string },
+  options?: { json?: boolean; savedCopyPath?: string },
 ): Promise<string> {
-  return renderTranscriptMarkdown(await loadTranscriptExport(sessionID), {
+  const exported = await loadTranscriptExport(sessionID);
+  if (options?.json) {
+    return JSON.stringify(renderTranscriptJson(exported), null, 2);
+  }
+  return renderTranscriptMarkdown(exported, {
     savedCopyPath: options?.savedCopyPath,
   });
 }
 
 async function renderInputTranscript(
   inputPath: string,
-  options?: { savedCopyPath?: string },
+  options?: { json?: boolean; savedCopyPath?: string },
 ): Promise<string> {
-  return renderTranscriptMarkdown(await loadTranscriptExportFile(inputPath), {
+  const exported = await loadTranscriptExportFile(inputPath);
+  if (options?.json) {
+    return JSON.stringify(renderTranscriptJson(exported), null, 2);
+  }
+  return renderTranscriptMarkdown(exported, {
     savedCopyPath: options?.savedCopyPath,
   });
 }
 
 async function cmdTranscript(
   target: { input?: string; sessionID?: string },
-  options: { output?: string; teeTemp?: boolean },
+  options: { json?: boolean; output?: string; teeTemp?: boolean },
 ): Promise<void> {
   if (options.output && options.teeTemp) {
     throw new Error("transcript accepts either --output <path> or --tee-temp, not both.");
@@ -812,14 +830,19 @@ async function cmdTranscript(
   const outputPath = options.output
     ? resolve(options.output)
     : options.teeTemp
-      ? join(tmpdir(), `opx-session-${teeLabel}-${Date.now()}.md`)
+      ? join(
+          tmpdir(),
+          `opx-session-${teeLabel}-${Date.now()}.${options.json ? "json" : "md"}`,
+        )
       : undefined;
 
   const transcript = target.sessionID
     ? await renderSessionTranscript(target.sessionID, {
+        json: options.json,
         savedCopyPath: outputPath,
       })
     : await renderInputTranscript(target.input ?? "", {
+        json: options.json,
         savedCopyPath: outputPath,
       });
 
@@ -1075,8 +1098,13 @@ async function cmdMessage(sessionID: string, messageID: string, options: { json?
   }
 }
 
-async function cmdPrompt(sessionID: string, message: string, options: { noReply?: boolean; outputFormat?: string }): Promise<void> {
+async function cmdPrompt(
+  sessionID: string,
+  message: string,
+  options: PromptOptions,
+): Promise<void> {
   const result = await sendPrompt(sessionID, message, {
+    agent: options.agent,
     noReply: options.noReply,
     outputFormat: options.outputFormat,
   });
@@ -1286,13 +1314,13 @@ Session Management:
 Messages:
   messages <session-id> [--limit N]      List messages in session
   message <session-id> <message-id>      Get single message details
-  transcript <session-id> [--output PATH | --tee-temp]
-                                         Render a turn/step markdown transcript
-  transcript --input <export.json> [--output PATH | --tee-temp]
-                                         Render a saved export JSON transcript
+  transcript <session-id> [--json] [--output PATH | --tee-temp]
+                                         Render a transcript from the live session
+  transcript --input <export.json> [--json] [--output PATH | --tee-temp]
+                                         Render a transcript from a saved export
 
 Interaction:
-  prompt <session-id> <message> [--no-reply]
+  prompt <session-id> <message> [--agent NAME] [--no-reply]
   command <session-id> <command> [args]  Send command to session
   shell <session-id> <command> [--agent NAME]
                                          Run a shell command in session
@@ -1314,6 +1342,8 @@ Options:
   --json         Output as JSON
   --limit N      Limit results
   --input PATH   Render transcript from an exported JSON file
+  --json         Output as JSON
+  --agent NAME   Agent to use for prompt or shell commands
   --no-reply     Don't wait for AI response (prompt only)
   --output PATH  Save transcript to a file instead of streaming
   --tee-temp     Stream transcript and also save it to a temp file
@@ -1326,10 +1356,11 @@ Examples:
   opx-session list --limit 10
   opx-session messages ses_abc123 --json
   opx-session transcript ses_abc123
+  opx-session transcript ses_abc123 --json
   opx-session transcript --input ./session-export.json
   opx-session transcript ses_abc123 --tee-temp
   opx-session create --title "test" --parent ses_xyz
-  opx-session prompt ses_abc123 "hello" --no-reply
+  opx-session prompt ses_abc123 "hello" --agent Minimal --no-reply
   opx-session summarize ses_abc123 --model github-copilot/gpt-4.1
   opx-session stats
 `);
@@ -1516,6 +1547,7 @@ async function main(): Promise<void> {
             sessionID: positional[0],
           },
           {
+          json: !!options.json,
           output: options.output as string | undefined,
           teeTemp: !!options["tee-temp"] || !!options.teeTemp,
           },
@@ -1528,6 +1560,7 @@ async function main(): Promise<void> {
           process.exit(1);
         }
         await cmdPrompt(positional[0], positional[1], {
+          agent: options.agent as string | undefined,
           noReply: !!options["no-reply"] || !!options.noReply,
           outputFormat: options["output-format"] as string | undefined,
         });
@@ -1616,6 +1649,7 @@ export {
   summarizeSession,
   getMessages,
   getMessage,
+  buildPromptRequestBody,
   sendPrompt,
   sendCommand,
   runShell,

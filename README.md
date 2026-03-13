@@ -14,6 +14,8 @@ This package provides session management and automation through the former harne
 - `opx-session` provides broader session control.
 - `opx-session transcript <session-id>` renders a turn/step markdown transcript
   from the configured OpenCode server without relying on an external package.
+- `opx-session transcript <session-id> --json` emits the compact structured
+  transcript document used by downstream prompt-based summarizers.
 - `opencode-transcript` remains available as a compatibility entrypoint for
   transcript-only workflows, including `--input /path/to/export.json`.
 
@@ -32,6 +34,9 @@ Transcript examples:
 ```bash
 npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
   opx-session transcript ses_abc123
+
+npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+  opx-session transcript ses_abc123 --json
 
 npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
   opx-session transcript ses_abc123 --output /tmp/session.md

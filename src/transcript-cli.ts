@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
 import {
+  renderTranscriptJson,
   renderTranscriptMarkdown,
   type TranscriptExport,
 } from "./transcript";
@@ -13,6 +14,7 @@ import {
 
 type TranscriptCliArgs = {
   input?: string;
+  json: boolean;
   opencodeBin?: string;
   output?: string;
   sessionID?: string;
@@ -24,9 +26,9 @@ function printHelp(): void {
 OpenCode transcript renderer
 
 Usage:
-  opencode-transcript <session-id> [--output PATH | --tee-temp]
-  opencode-transcript --input <export.json> [--output PATH | --tee-temp]
-  opencode-transcript <session-id> --opencode-bin /path/to/opencode [--output PATH | --tee-temp]
+  opencode-transcript <session-id> [--json] [--output PATH | --tee-temp]
+  opencode-transcript --input <export.json> [--json] [--output PATH | --tee-temp]
+  opencode-transcript <session-id> --opencode-bin /path/to/opencode [--json] [--output PATH | --tee-temp]
 
 Behavior:
   By default, session IDs are rendered through the configured OpenCode server.
@@ -34,6 +36,7 @@ Behavior:
 
 Options:
   --input PATH        Render a saved \`opencode export\` JSON file
+  --json              Emit compact structured JSON instead of markdown
   --opencode-bin BIN  Export with BIN instead of using the server API
   --output PATH       Save transcript to a file instead of streaming
   --tee-temp          Stream transcript and also save it to a temp file
@@ -43,7 +46,7 @@ Options:
 
 function parseArgs(argv: string[]): TranscriptCliArgs {
   const positional: string[] = [];
-  const parsed: TranscriptCliArgs = { teeTemp: false };
+  const parsed: TranscriptCliArgs = { json: false, teeTemp: false };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -56,6 +59,9 @@ function parseArgs(argv: string[]): TranscriptCliArgs {
       case "--input":
         parsed.input = argv[index + 1];
         index += 1;
+        break;
+      case "--json":
+        parsed.json = true;
         break;
       case "--opencode-bin":
         parsed.opencodeBin = argv[index + 1];
@@ -117,7 +123,10 @@ function teeLabel(args: TranscriptCliArgs): string {
 
 async function renderTranscript(args: TranscriptCliArgs, savedCopyPath?: string) {
   if (args.input) {
-    return renderInputTranscript(args.input, { savedCopyPath });
+    return renderInputTranscript(args.input, {
+      json: args.json,
+      savedCopyPath,
+    });
   }
 
   if (!args.sessionID) {
@@ -129,10 +138,16 @@ async function renderTranscript(args: TranscriptCliArgs, savedCopyPath?: string)
       args.sessionID,
       args.opencodeBin,
     );
+    if (args.json) {
+      return JSON.stringify(renderTranscriptJson(exported), null, 2);
+    }
     return renderTranscriptMarkdown(exported, { savedCopyPath });
   }
 
-  return renderSessionTranscript(args.sessionID, { savedCopyPath });
+  return renderSessionTranscript(args.sessionID, {
+    json: args.json,
+    savedCopyPath,
+  });
 }
 
 async function main(): Promise<void> {
@@ -148,7 +163,12 @@ async function main(): Promise<void> {
   const outputPath = args.output
     ? resolve(args.output)
     : args.teeTemp
-      ? join(tmpdir(), `opencode-transcript-${teeLabel(args)}-${Date.now()}.md`)
+      ? join(
+          tmpdir(),
+          `opencode-transcript-${teeLabel(args)}-${Date.now()}.${
+            args.json ? "json" : "md"
+          }`,
+        )
       : undefined;
 
   const transcript = await renderTranscript(args, outputPath);

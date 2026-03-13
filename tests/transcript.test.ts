@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 
 import fixture from "./fixtures/transcript-multiturn.json";
 import sampleExport from "./fixtures/sample-export.json";
-import { renderTranscriptMarkdown } from "../src/transcript";
+import {
+  renderTranscriptJson,
+  renderTranscriptMarkdown,
+} from "../src/transcript";
 
 function assertOrdered(text: string, fragments: string[]) {
   let cursor = -1;
@@ -100,5 +103,70 @@ test("renders reasoning and legacy tool timing from exported JSON fixtures", () 
     "example output",
     "#### Step 3 `text`",
     "Hello.",
+  ]);
+});
+
+test("renders compact transcript JSON without renderer-only scaffolding", () => {
+  const rendered = renderTranscriptJson(fixture);
+
+  expect(rendered.sessionID).toBe("ses_31df77a2effeFkeVNZmfvgo5Mo");
+  expect(rendered.turns).toHaveLength(2);
+  expect(rendered.turns[0].userPrompt).toContain(
+    "Use introspection to get this session ID",
+  );
+  expect(rendered.turns[0].duration).toBe("8.266s");
+  expect(rendered.turns[0].assistantMessages).toHaveLength(2);
+  expect(rendered.turns[0].assistantMessages[0].finish).toBe("tool-calls");
+  expect(rendered.turns[0].assistantMessages[0].steps).toEqual([
+    {
+      duration: "0.009s",
+      heading: "tool:introspection",
+      index: 2,
+      inputText: "{}",
+      outputText:
+        "Session ID: ses_31df77a2effeFkeVNZmfvgo5Mo\nTitle: transcript-fixture\nMessage ID: msg_ce208b3e6001huyKCc6pC6iD4m\nAgent: Interactive",
+      status: "completed",
+      tool: "introspection",
+      type: "tool",
+    },
+  ]);
+  expect(rendered.turns[0].assistantMessages[1].text).toBe("SESSION_OK");
+  expect(JSON.stringify(rendered)).not.toContain("Snapshot:");
+  expect(JSON.stringify(rendered)).not.toContain("cache read");
+});
+
+test("preserves reasoning text and tool IO in the compact transcript JSON", () => {
+  const rendered = renderTranscriptJson(sampleExport);
+
+  expect(rendered.turns).toHaveLength(1);
+  expect(rendered.turns[0].assistantMessages).toHaveLength(1);
+  expect(rendered.turns[0].assistantMessages[0].reasoning).toEqual([
+    "Reason about whether a tool is needed.",
+  ]);
+  expect(rendered.turns[0].assistantMessages[0].steps).toEqual([
+    {
+      contentText: "Reason about whether a tool is needed.",
+      duration: "0.000s",
+      heading: "reasoning",
+      index: 1,
+      type: "reasoning",
+    },
+    {
+      duration: "0.420s (legacy tool timing)",
+      heading: "tool:webfetch",
+      index: 2,
+      inputText: "{\n  \"url\": \"https://example.com\"\n}",
+      outputText: "example output",
+      status: "success",
+      tool: "webfetch",
+      type: "tool",
+    },
+    {
+      contentText: "Hello.",
+      duration: "3.000s",
+      heading: "text",
+      index: 3,
+      type: "text",
+    },
   ]);
 });

@@ -16,6 +16,41 @@ export interface TranscriptExport {
   messages: TranscriptMessage[];
 }
 
+export interface JsonTranscriptStep {
+  contentText?: string;
+  duration: string;
+  heading: string;
+  index: number;
+  inputText?: string;
+  outputText?: string;
+  status?: string;
+  tool?: string;
+  type: string;
+}
+
+export interface JsonTranscriptAssistantMessage {
+  duration: string;
+  finish: string;
+  index: number;
+  reasoning: string[];
+  steps: JsonTranscriptStep[];
+  text: string;
+}
+
+export interface JsonTranscriptTurn {
+  assistantMessages: JsonTranscriptAssistantMessage[];
+  duration: string;
+  index: number;
+  userPrompt: string;
+}
+
+export interface JsonTranscriptDocument {
+  directory: string;
+  sessionID: string;
+  title: string;
+  turns: JsonTranscriptTurn[];
+}
+
 type TranscriptStep = {
   completedMs: number | null;
   completedSource: string | null;
@@ -119,12 +154,31 @@ function renderTokens(tokens: any): string {
   return parts.join("; ");
 }
 
+function renderValue(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
 function textParts(parts: TranscriptPart[]): string {
   return parts
     .filter((part) => part?.type === "text" && typeof part?.text === "string")
     .map((part) => part.text.trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+function reasoningParts(parts: TranscriptPart[]): string[] {
+  return parts
+    .filter(
+      (part) =>
+        typeof part?.type === "string" &&
+        part.type.includes("reasoning") &&
+        typeof part?.text === "string",
+    )
+    .map((part) => part.text.trim())
+    .filter(Boolean);
 }
 
 function indentBlock(text: string): string[] {
@@ -347,6 +401,93 @@ function buildTurns(messages: TranscriptMessage[]): TranscriptTurn[] {
   }
 
   return turns;
+}
+
+function buildJsonStep(step: TranscriptStep): JsonTranscriptStep | null {
+  const duration = hintedDurationText(
+    step.startedMs,
+    step.completedMs,
+    step.durationHintMs,
+    step.durationHintSource,
+  );
+  switch (step.part?.type) {
+    case "tool":
+      return {
+        duration,
+        heading: step.heading,
+        index: step.index,
+        inputText: renderValue(step.part?.state?.input ?? {}),
+        outputText:
+          step.part?.state?.output === undefined
+            ? undefined
+            : renderValue(step.part.state.output),
+        status: String(step.part?.state?.status ?? "unknown"),
+        tool:
+          typeof step.part?.tool === "string" ? step.part.tool : "unknown",
+        type: "tool",
+      };
+    case "text":
+    case "reasoning":
+      return {
+        contentText: typeof step.part?.text === "string" ? step.part.text : "",
+        duration,
+        heading: step.heading,
+        index: step.index,
+        type: step.part.type,
+      };
+    case "patch":
+      return {
+        contentText: renderValue(step.part?.text ?? step.part),
+        duration,
+        heading: step.heading,
+        index: step.index,
+        type: "patch",
+      };
+    default:
+      return null;
+  }
+}
+
+function buildJsonAssistantMessage(
+  message: TranscriptMessage,
+  index: number,
+): JsonTranscriptAssistantMessage {
+  return {
+    duration: durationText(messageCreatedMs(message), messageCompletedMs(message)),
+    finish: String(message.info?.finish ?? "unknown"),
+    index,
+    reasoning: reasoningParts(message.parts ?? []),
+    steps: buildSteps(message).flatMap((step) => {
+      const rendered = buildJsonStep(step);
+      return rendered ? [rendered] : [];
+    }),
+    text: textParts(message.parts ?? []),
+  };
+}
+
+export function renderTranscriptJson(
+  data: TranscriptExport,
+): JsonTranscriptDocument {
+  const turns = buildTurns(data.messages ?? []);
+  return {
+    directory: String(data.info?.directory ?? "unknown"),
+    sessionID: String(data.info?.id ?? "unknown"),
+    title: String(data.info?.title ?? "unknown"),
+    turns: turns.map((turn) => {
+      const turnStart = turn.startedMs ?? messageCreatedMs(turn.userMessage);
+      const turnEnd =
+        turn.completedMs ??
+        messageCompletedMs(turn.assistantMessages.at(-1) ?? turn.userMessage);
+      return {
+        assistantMessages: turn.assistantMessages.map((message, index) =>
+          buildJsonAssistantMessage(message, index + 1),
+        ),
+        duration: durationText(turnStart, turnEnd),
+        index: turn.index,
+        userPrompt: textParts(turn.userMessage?.parts ?? []),
+      };
+    }),
+  };
 }
 
 function renderStep(step: TranscriptStep): string[] {
