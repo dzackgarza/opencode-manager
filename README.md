@@ -51,11 +51,13 @@ npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opencode-transcript --input /tmp/session-export.json
 ```
 
-## Environment
+## Environment Variables
 
-- `OPENCODE_BASE_URL`: defaults to `http://127.0.0.1:4096`
-- `OPENCODE_SERVER_USERNAME`: defaults to `opencode`
-- `OPENCODE_SERVER_PASSWORD`: is optional
+| Name | Required | Default | Controls |
+|------|----------|---------|---------|
+| `OPENCODE_BASE_URL` | No | `http://127.0.0.1:4096` | OpenCode server URL |
+| `OPENCODE_SERVER_USERNAME` | No | `opencode` | HTTP basic auth username |
+| `OPENCODE_SERVER_PASSWORD` | No | — | HTTP basic auth password |
 
 `opx` and `opx-session` always target `OPENCODE_BASE_URL`, so they can attach to any
 OpenCode server you start yourself. For repo-local workflow tests, prefer a dedicated
