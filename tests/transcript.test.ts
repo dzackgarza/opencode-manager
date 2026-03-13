@@ -23,7 +23,7 @@ test("renders a multi-turn transcript with ordered steps and exact durations", (
 
   expect(rendered).toContain("# OpenCode Session Transcript");
   expect(rendered).toContain(
-    "- Confirmed session ID: `ses_31df77a2effeFkeVNZmfvgo5Mo`",
+    "- Confirmed session ID: `ses_multiturn_fixture`",
   );
   expect(rendered).toContain("- Turns: 2");
   expect(rendered).toContain("- Agent steps: 9");
@@ -41,7 +41,7 @@ test("renders a multi-turn transcript with ordered steps and exact durations", (
   expect(rendered).toContain("#### Step 2 `tool:introspection`");
   expect(rendered).toContain("- Duration: 0.009s");
   expect(rendered).toContain(
-    "    Session ID: ses_31df77a2effeFkeVNZmfvgo5Mo",
+    "    Session ID: ses_multiturn_fixture",
   );
   expect(rendered).toContain("### Agent Message 2");
   expect(rendered).toContain("    SESSION_OK");
@@ -64,11 +64,11 @@ test("renders a multi-turn transcript with ordered steps and exact durations", (
 test("includes the saved copy path in the transcript header when requested", () => {
   const rendered = renderTranscriptMarkdown(fixture, {
     generatedAtMs: 1773332600000,
-    savedCopyPath: "/tmp/opx-session-ses_31df77a2effeFkeVNZmfvgo5Mo.md",
+    savedCopyPath: "/tmp/opx-session-ses_multiturn_fixture.md",
   });
 
   expect(rendered).toContain(
-    "- Saved copy: `/tmp/opx-session-ses_31df77a2effeFkeVNZmfvgo5Mo.md`",
+    "- Saved copy: `/tmp/opx-session-ses_multiturn_fixture.md`",
   );
   expect(rendered).toContain("- Turns: 2");
   expect(rendered).toContain("## Turn 2");
@@ -109,7 +109,7 @@ test("renders reasoning and legacy tool timing from exported JSON fixtures", () 
 test("renders compact transcript JSON without renderer-only scaffolding", () => {
   const rendered = renderTranscriptJson(fixture);
 
-  expect(rendered.sessionID).toBe("ses_31df77a2effeFkeVNZmfvgo5Mo");
+  expect(rendered.sessionID).toBe("ses_multiturn_fixture");
   expect(rendered.turns).toHaveLength(2);
   expect(rendered.turns[0].userPrompt).toContain(
     "Use introspection to get this session ID",
@@ -124,7 +124,7 @@ test("renders compact transcript JSON without renderer-only scaffolding", () => 
       index: 2,
       inputText: "{}",
       outputText:
-        "Session ID: ses_31df77a2effeFkeVNZmfvgo5Mo\nTitle: transcript-fixture\nMessage ID: msg_ce208b3e6001huyKCc6pC6iD4m\nAgent: Interactive",
+        "Session ID: ses_multiturn_fixture\nTitle: transcript-fixture\nMessage ID: msg_fixture_turn1_asst1\nAgent: Interactive",
       status: "completed",
       tool: "introspection",
       type: "tool",
