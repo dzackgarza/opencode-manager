@@ -6,6 +6,15 @@
 
 This Bun-based package automates OpenCode sessions via GitHub and `npx`.
 
+## Features
+
+- `opx run` — create session, send prompt, wait for idle, print transcript, auto-delete
+- `opx resume` — send follow-up prompts to existing sessions
+- `opx session` / `opx provider` / `opx debug` — session management, provider health, and diagnostic tools
+- `opx-session` — full session API surface (list, get, create, prompt, transcript, revert, permissions, and more)
+- `opencode-transcript` — standalone transcript renderer for session IDs or saved export files
+- `findFreePort`-based server setup for safe parallel test runs
+
 ## Scope
 
 This package provides session management and automation through the former harness utilities:
