@@ -21,33 +21,33 @@ This package provides session management and automation through the former harne
 
 ## Run
 
-Running these tools requires `npx`, `bun`, and GitHub SSH access to the private repository.
+Running these tools requires `npx` and `bun`.
 
 ```bash
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opx --help
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opx-session --help
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git opencode-transcript --help
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git opx --help
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git opx-session --help
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git opencode-transcript --help
 ```
 
 Transcript examples:
 
 ```bash
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opx-session transcript ses_abc123
 
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opx-session transcript ses_abc123 --json
 
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opx-session transcript ses_abc123 --output /tmp/session.md
 
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opx-session transcript ses_abc123 --tee-temp
 
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opx-session transcript --input /tmp/session-export.json
 
-npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opencode-transcript --input /tmp/session-export.json
 ```
 
@@ -64,9 +64,9 @@ shared default instance.
 
 ```bash
 direnv exec /path/to/plugin \
-  /home/dzack/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4198
+  opencode serve --hostname 127.0.0.1 --port 4198
 
 OPENCODE_BASE_URL=http://127.0.0.1:4198 \
-  npx --yes --package=git+ssh://git@github.com/dzackgarza/opencode-manager.git \
+  npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opx-session list --json
 ```
