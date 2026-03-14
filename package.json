@@ -1,7 +1,7 @@
 {
   "name": "@dzackgarza/opencode-manager",
-  "version": "0.1.0",
-  "description": "Bun-first manager tools for OpenCode session automation",
+  "version": "1.0.0",
+  "description": "Opinionated workflow CLI for OpenCode sessions",
   "license": "UNLICENSED",
   "type": "module",
   "files": [
@@ -10,23 +10,23 @@
     "config",
     "README.md",
     "package.json",
-    "tsconfig.json"
+    "tsconfig.json",
+    "CHANGELOG.md"
   ],
   "bin": {
     "opencode-manager": "./bin/opx",
     "opx": "./bin/opx",
-    "opx-session": "./bin/opx-session",
     "opencode-transcript": "./bin/opencode-transcript"
   },
   "scripts": {
     "opx": "bun run src/cli.ts",
-    "opx-session": "bun run src/session-harness.ts",
-    "check": "tsc --noEmit -p tsconfig.json",
+    "check": "just --justfile justfile typecheck",
     "opencode-transcript": "bun run src/transcript-cli.ts",
-    "test": "bun test"
+    "test": "just --justfile justfile test"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "^0.7.4"
+    "@opencode-ai/sdk": "^0.7.4",
+    "commander": "^14.0.3"
   },
   "devDependencies": {
     "bun-types": "^1.3.10",

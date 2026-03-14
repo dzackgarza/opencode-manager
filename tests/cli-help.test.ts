@@ -17,22 +17,53 @@ async function runCli(args: string[]) {
 }
 
 describe("opx help surface", () => {
-  it("keeps workflow commands at top level", async () => {
+  it("shows only the redesigned workflow commands at top level", async () => {
     const result = await runCli(["--help"]);
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("WORKFLOW COMMANDS:");
-    expect(result.stdout).toContain("  start [--title <text>] [--json]");
-    expect(result.stdout).toContain("  prompt --session <id> --prompt <text>");
-    expect(result.stdout).toContain("Internal surfaces stay behind explicit subcommands");
-    expect(result.stdout).not.toContain("SESSION COMMANDS:");
+    expect(result.stdout).toContain("  one-shot --prompt <text>");
+    expect(result.stdout).toContain("  begin-session");
+    expect(result.stdout).toContain("  chat --session <id> --prompt <text>");
+    expect(result.stdout).toContain("  system --session <id> --prompt <text>");
+    expect(result.stdout).toContain("  final --session <id> --prompt <text>");
+    expect(result.stdout).toContain("Run `opx advanced --help`");
+    expect(result.stdout).toContain("Run `opx debug --help`");
+    expect(result.stdout).not.toContain("start [--title <text>] [--json]");
+    expect(result.stdout).not.toContain("prompt --session <id> --prompt <text>");
+    expect(result.stdout).not.toContain("messages");
+    expect(result.stdout).not.toContain("resume");
+    expect(result.stdout).not.toContain("opx session");
+    expect(result.stdout).not.toContain("opx-session");
   });
 
-  it("marks opx session as internal on explicit help", async () => {
-    const result = await runCli(["session", "--help"]);
+  it("layers advanced help separately from the workflow surface", async () => {
+    const result = await runCli(["advanced", "--help"]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("opx session — internal session subcommands");
-    expect(result.stdout).toContain("This surface is internal");
+    expect(result.stdout).toContain("opx advanced");
+    expect(result.stdout).toContain("provider-list");
+    expect(result.stdout).toContain("provider-health");
+    expect(result.stdout).not.toContain("opx-session");
+    expect(result.stdout).not.toContain("session messages");
+  });
+
+  it("keeps debug help under an explicit debug layer", async () => {
+    const result = await runCli(["debug", "--help"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("opx debug");
+    expect(result.stdout).toContain("trace");
+    expect(result.stdout).toContain("probe-limit");
+    expect(result.stdout).not.toContain("opx-session");
+  });
+
+  it("removes keep semantics from one-shot help", async () => {
+    const result = await runCli(["one-shot", "--help"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("return the last assistant message");
+    expect(result.stdout).toContain("--transcript");
+    expect(result.stdout).not.toContain("--keep");
   });
 });

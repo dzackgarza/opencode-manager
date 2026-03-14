@@ -6,7 +6,7 @@ setup-npm-trust:
     npm trust github --repository dzackgarza/opencode-manager --file publish.yml
 
 typecheck:
-    bun run check
+    bunx tsc --noEmit -p tsconfig.json
 
 test:
     #!/usr/bin/env bash
@@ -35,7 +35,13 @@ bump-minor:
     git commit -m "chore: bump version to v$(node -p 'require("./package.json").version')"
     git tag "v$(node -p 'require("./package.json").version')"
 
+# Bump major version, commit, and tag
+bump-major:
+    npm version major --no-git-tag-version
+    git add package.json
+    git commit -m "chore: bump version to v$(node -p 'require("./package.json").version')"
+    git tag "v$(node -p 'require("./package.json").version')"
+
 # Push commits and tags to trigger CI release
 release: check
     git push && git push --tags
-

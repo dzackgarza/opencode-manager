@@ -1,10 +1,23 @@
 #!/usr/bin/env bun
 import { createOpencodeClient } from "@opencode-ai/sdk";
+import { Command } from "commander";
 import { spawn } from "child_process";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
 import { renderSessionTranscript } from "./session-harness";
+import {
+  buildPromptBody,
+  deleteWorkflowState,
+  formatModelRef,
+  loadWorkflowState,
+  parseModelRef,
+  renderWorkflowOutput,
+  requireStoredIdentity,
+  saveWorkflowState,
+  type ModelRef,
+  type WorkflowSessionState,
+} from "./workflow";
 
 const REQUEST_TIMEOUT_MS = 180000;
 let RESOLVED_BASE_URL = "http://127.0.0.1:4096";
@@ -740,6 +753,139 @@ function printSessionHandle(
     return;
   }
   console.log(sessionID);
+}
+
+function assistantTexts(messages: Array<any>): string[] {
+  return messages
+    .filter((message) => message.info?.role === "assistant")
+    .map((message) => flattenText(message.parts ?? []))
+    .filter((text) => text.length > 0);
+}
+
+function workflowStateFromSession(
+  sessionID: string,
+  context: SessionContext | null,
+  title: string,
+  agent?: string,
+  model?: ModelRef,
+): WorkflowSessionState {
+  return {
+    createdAt: Date.now(),
+    directory: context?.directory,
+    model: model ?? null,
+    responderAgent: agent ?? null,
+    sessionID,
+    title,
+    workspaceID: context?.workspaceID,
+  };
+}
+
+async function fetchSessionUpdatedAt(
+  sessionID: string,
+  context?: SessionContext | null,
+): Promise<number | null> {
+  const headers = applySessionContextHeaders({}, context);
+  if (AUTH_HEADER) {
+    headers.authorization = AUTH_HEADER;
+  }
+
+  const response = await fetch(
+    `${RESOLVED_BASE_URL}/session/${encodeURIComponent(sessionID)}`,
+    { headers },
+  );
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`session lookup failed (${response.status}): ${text}`);
+  }
+
+  const data = (await response.json()) as
+    | { time?: { updated?: number } }
+    | null;
+  return data?.time?.updated ?? null;
+}
+
+async function waitForSessionMutation(
+  sessionID: string,
+  initialUpdatedAt: number | null,
+  context?: SessionContext | null,
+): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const updatedAt = await fetchSessionUpdatedAt(sessionID, context);
+    if (updatedAt !== null && updatedAt !== initialUpdatedAt) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  throw new Error(
+    "system prompt injection did not update the session; refusing to report success",
+  );
+}
+
+async function queueWorkflowPrompt(
+  sessionClient: any,
+  sessionID: string,
+  state: Pick<WorkflowSessionState, "directory" | "workspaceID" | "model" | "responderAgent">,
+  prompt: string,
+  visibility: "chat" | "system",
+): Promise<void> {
+  const context = {
+    directory: state.directory,
+    workspaceID: state.workspaceID,
+  };
+  const identity = requireStoredIdentity(state);
+  const initialMessages = await loadSessionMessages(sessionClient, sessionID, context);
+  const initialUpdatedAt = await fetchSessionUpdatedAt(sessionID, context);
+
+  await promptAsyncRequest(
+    sessionID,
+    buildPromptBody({ identity, prompt, visibility }),
+    context,
+  );
+
+  if (visibility === "system") {
+    await waitForSessionMutation(sessionID, initialUpdatedAt, context);
+    return;
+  }
+
+  await waitForPromptRecording(
+    sessionClient,
+    sessionID,
+    prompt,
+    initialMessages.length,
+    context,
+  );
+}
+
+async function completeWorkflowCommand(
+  sessionClient: any,
+  sessionID: string,
+  context: SessionContext | null,
+  transcriptRequested: boolean,
+): Promise<string> {
+  const result = await waitForIdle(sessionClient, sessionID, 0, 180, context);
+  if (result.timedOut) {
+    throw new Error("Timed out while waiting for the session to become idle.");
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `The session failed before reaching idle${result.errorKind ? ` (${result.errorKind})` : ""}.`,
+    );
+  }
+
+  const messages = await loadSessionMessages(sessionClient, sessionID, context);
+  const transcript = await renderSessionTranscript(sessionID, {
+    json: false,
+  });
+  return renderWorkflowOutput({
+    assistantMessages: assistantTexts(messages),
+    transcript,
+    transcriptRequested,
+  });
 }
 
 async function writeTranscriptOutput(
@@ -1836,153 +1982,457 @@ function helpDebug() {
 // Main dispatcher
 // ---------------------------------------------------------------------------
 
-async function main() {
-  const { command, subcommand, args } = parseArgs(process.argv.slice(2));
+function topLevelHelpText(): string {
+  return [
+    "opx — opinionated OpenCode workflow CLI",
+    "",
+    "WORKFLOW COMMANDS:",
+    "  one-shot --prompt <text> [--agent <name>] [--model provider/model] [--transcript]",
+    "  begin-session [--agent <name>] [--model provider/model] [--json]",
+    "  chat --session <id> --prompt <text> [--no-reply]",
+    "  system --session <id> --prompt <text> [--no-reply]",
+    "  wait --session <id> [--json]",
+    "  transcript --session <id> [--json] [--output PATH | --tee-temp]",
+    "  final --session <id> --prompt <text> [--transcript]",
+    "  delete --session <id>",
+    "",
+    "Run `opx advanced --help` for secondary operational commands.",
+    "Run `opx debug --help` for debugging-only commands.",
+    "",
+    "This CLI intentionally removes the raw session API mirror from the public surface.",
+  ].join("\n");
+}
+
+function advancedHelpText(): string {
+  return [
+    "opx advanced — secondary supported commands",
+    "",
+    "COMMANDS:",
+    "  provider-list",
+    "  provider-health --provider <id> [--model provider/model]",
+    "",
+    "These commands remain supported but are not part of the primary workflow narrative.",
+  ].join("\n");
+}
+
+function debugHelpText(): string {
+  return [
+    "opx debug — debugging-only commands",
+    "",
+    "COMMANDS:",
+    "  trace --session <id> [--timeout <sec>] [--verbose] [--include-aborted] [--no-service-log]",
+    "  errors --session <id>",
+    "  limit-errors --session <id> [--verbose]",
+    "  probe-limit --model provider/model [--agent <name>] [--prompt <text>]",
+    "  probe-limit-known --provider anthropic|opencode-minimax|opencode-big-pickle [--timeout <sec>]",
+    "  probe-limit-trace --model provider/model [--agent <name>] [--timeout <sec>] [--verbose] [--include-aborted]",
+    "  probe-async-command [--model provider/model] [--agent <name>]",
+    "  probe-async-subagent [--model provider/model] [--agent <name>]",
+  ].join("\n");
+}
+
+async function runOneShotCommand(options: {
+  agent?: string;
+  model?: string;
+  prompt: string;
+  transcript?: boolean;
+}): Promise<void> {
   const client = makeClient();
+  const parsedModel = options.model ? parseModelRef(options.model) : undefined;
+  const title = `opx:one-shot:${Date.now()}`;
+  const { sessionID, context, sessionClient } = await createWorkflowSession(
+    client,
+    title,
+  );
 
-  switch (command) {
-    // Primary public API
-    case "run":
-      if (hasFlag(args, "help")) {
-        helpRun();
-        break;
-      }
-      await cmdRun(client, args);
-      break;
-    case "start":
-      if (hasFlag(args, "help")) {
-        helpStart();
-        break;
-      }
-      await cmdStart(client, args);
-      break;
-    case "prompt":
-      if (hasFlag(args, "help")) {
-        helpPrompt();
-        break;
-      }
-      await cmdPrompt(client, args);
-      break;
-    case "wait":
-      if (hasFlag(args, "help")) {
-        helpWait();
-        break;
-      }
-      await cmdWait(client, args);
-      break;
-    case "messages":
-      if (hasFlag(args, "help")) {
-        helpMessages();
-        break;
-      }
-      await cmdMessages(client, args);
-      break;
-    case "transcript":
-      if (hasFlag(args, "help")) {
-        helpTranscript();
-        break;
-      }
-      await cmdTranscript(client, args);
-      break;
-    case "delete":
-      if (hasFlag(args, "help")) {
-        helpDelete();
-        break;
-      }
-      await cmdDelete(client, args);
-      break;
-    case "resume":
-      if (hasFlag(args, "help")) {
-        helpResume();
-        break;
-      }
-      await cmdResume(client, args);
-      break;
-
-    // session subcommands
-    case "session":
-      if (hasFlag(args, "help") || !subcommand) {
-        helpSession();
-        break;
-      }
-      switch (subcommand) {
-        case "delete":
-          await cmdSessionDelete(client, args);
-          break;
-        case "messages":
-          await cmdSessionMessages(client, args);
-          break;
-        default:
-          console.error(`Unknown session subcommand: ${subcommand}`);
-          helpSession();
-          process.exitCode = 1;
-      }
-      break;
-
-    // provider subcommands
-    case "provider":
-      if (hasFlag(args, "help") || !subcommand) {
-        helpProvider();
-        break;
-      }
-      switch (subcommand) {
-        case "list":
-          await cmdProviderList(client);
-          break;
-        case "health":
-          await cmdProviderHealth(client, args);
-          break;
-        default:
-          console.error(`Unknown provider subcommand: ${subcommand}`);
-          helpProvider();
-          process.exitCode = 1;
-      }
-      break;
-
-    // debug subcommands
-    case "debug":
-      if (hasFlag(args, "help") || !subcommand) {
-        helpDebug();
-        break;
-      }
-      switch (subcommand) {
-        case "trace":
-          await cmdTrace(client, args);
-          break;
-        case "errors":
-          await cmdErrors(client, args);
-          break;
-        case "limit-errors":
-          await cmdLimitErrors(client, args);
-          break;
-        case "probe-limit":
-          await cmdProbeLimit(client, args);
-          break;
-        case "probe-limit-known":
-          await cmdProbeLimitKnown(args);
-          break;
-        case "probe-limit-trace":
-          await cmdProbeLimitTrace(client, args);
-          break;
-        case "probe-async-command":
-          await cmdProbeAsyncCommand(client, args);
-          break;
-        case "probe-async-subagent":
-          await cmdProbeAsyncSubagent(client, args);
-          break;
-        default:
-          console.error(`Unknown debug subcommand: ${subcommand}`);
-          helpDebug();
-          process.exitCode = 1;
-      }
-      break;
-
-    default:
-      help();
+  try {
+    await queuePrompt(
+      sessionClient,
+      sessionID,
+      options.prompt,
+      {
+        agent: options.agent || false,
+        model: options.model || false,
+      },
+      context,
+    );
+    const output = await completeWorkflowCommand(
+      sessionClient,
+      sessionID,
+      context,
+      !!options.transcript,
+    );
+    await deleteWorkflowSession(sessionClient, sessionID, context);
+    process.stdout.write(`${output.trimEnd()}\n`);
+  } catch (error) {
+    try {
+      await deleteWorkflowSession(sessionClient, sessionID, context);
+    } catch {
+      // Preserve the original workflow failure if cleanup also fails.
+    }
+    throw error;
   }
 }
 
+async function beginSessionCommand(options: {
+  agent?: string;
+  json?: boolean;
+  model?: string;
+}): Promise<void> {
+  const client = makeClient();
+  const parsedModel = options.model ? parseModelRef(options.model) : undefined;
+  const title = `opx:session:${Date.now()}`;
+  const { sessionID, context } = await createWorkflowSession(client, title);
+  await saveWorkflowState(
+    workflowStateFromSession(
+      sessionID,
+      context,
+      title,
+      options.agent,
+      parsedModel,
+    ),
+  );
+
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          agent: options.agent ?? null,
+          directory: context?.directory ?? null,
+          model: parsedModel ? formatModelRef(parsedModel) : null,
+          sessionID,
+          workspaceID: context?.workspaceID ?? null,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  console.log(`Started session ${sessionID}.`);
+}
+
+async function enqueueContinuedPrompt(options: {
+  noReply?: boolean;
+  prompt: string;
+  session: string;
+  visibility: "chat" | "system";
+}): Promise<void> {
+  const state = await loadWorkflowState(options.session);
+  const { client: sessionClient, context } = await makeSessionClient(
+    options.session,
+    state,
+  );
+
+  await queueWorkflowPrompt(
+    sessionClient,
+    options.session,
+    state,
+    options.prompt,
+    options.visibility,
+  );
+
+  if (options.noReply) {
+    console.log(`Queued ${options.visibility} prompt for ${options.session}.`);
+    return;
+  }
+
+  console.log(`Accepted ${options.visibility} prompt for ${options.session}.`);
+}
+
+async function waitCommand(options: { json?: boolean; session: string }): Promise<void> {
+  const { client } = await makeSessionClient(options.session);
+  const result = await waitForIdle(client, options.session, 0, 180, null);
+  if (options.json) {
+    console.log(JSON.stringify({ sessionID: options.session, ...result }, null, 2));
+  } else {
+    console.log(`Session ${options.session} is idle.`);
+  }
+  process.exitCode = result.exitCode;
+}
+
+async function transcriptCommand(options: {
+  json?: boolean;
+  output?: string;
+  session: string;
+  teeTemp?: boolean;
+}): Promise<void> {
+  await writeTranscriptOutput(options.session, {
+    json: !!options.json,
+    output: options.output || false,
+    session: options.session,
+    "tee-temp": !!options.teeTemp,
+  });
+}
+
+async function finalCommand(options: {
+  prompt: string;
+  session: string;
+  transcript?: boolean;
+}): Promise<void> {
+  const state = await loadWorkflowState(options.session);
+  const { client: sessionClient, context } = await makeSessionClient(
+    options.session,
+    state,
+  );
+
+  await queueWorkflowPrompt(
+    sessionClient,
+    options.session,
+    state,
+    options.prompt,
+    "chat",
+  );
+
+  const output = await completeWorkflowCommand(
+    sessionClient,
+    options.session,
+    context,
+    !!options.transcript,
+  );
+  await deleteWorkflowSession(sessionClient, options.session, context);
+  await deleteWorkflowState(options.session);
+  process.stdout.write(`${output.trimEnd()}\n`);
+}
+
+async function deleteCommand(options: { session: string }): Promise<void> {
+  const { client, context } = await makeSessionClient(options.session);
+  await deleteWorkflowSession(client, options.session, context);
+  await deleteWorkflowState(options.session);
+  console.log(`Deleted session ${options.session}.`);
+}
+
+function buildProgram(): Command {
+  const program = new Command();
+  program
+    .name("opx")
+    .description("Opinionated OpenCode workflow CLI")
+    .showHelpAfterError();
+  program.helpInformation = topLevelHelpText;
+
+  program
+    .command("one-shot")
+    .description(
+      "Create a session, run one prompt, return the last assistant message, and delete the session.",
+    )
+    .requiredOption("--prompt <text>", "Prompt text to inject")
+    .option("--agent <name>", "Responder agent fixed for this one-shot run")
+    .option("--model <provider/model>", "Responder model fixed for this one-shot run")
+    .option("--transcript", "Return the canonical transcript instead of the last assistant message")
+    .action(runOneShotCommand);
+
+  program
+    .command("begin-session")
+    .description(
+      "Create a prolonged session, persist responder identity metadata, and return the session handle.",
+    )
+    .option("--agent <name>", "Responder agent stored for later continued prompts")
+    .option("--model <provider/model>", "Responder model stored for later continued prompts")
+    .option("--json", "Emit structured session metadata")
+    .action(beginSessionCommand);
+
+  program
+    .command("chat")
+    .description("Inject a user-visible prompt into a begun session.")
+    .requiredOption("--session <id>", "Workflow session ID")
+    .requiredOption("--prompt <text>", "Prompt text")
+    .option("--no-reply", "Queue the prompt without allowing model continuation")
+    .action((options) =>
+      enqueueContinuedPrompt({ ...options, visibility: "chat" }),
+    );
+
+  program
+    .command("system")
+    .description("Inject an agent-only prompt into a begun session.")
+    .requiredOption("--session <id>", "Workflow session ID")
+    .requiredOption("--prompt <text>", "Agent-only prompt text")
+    .option("--no-reply", "Queue the prompt without allowing model continuation")
+    .action((options) =>
+      enqueueContinuedPrompt({ ...options, visibility: "system" }),
+    );
+
+  program
+    .command("wait")
+    .description("Wait until a begun session reaches idle.")
+    .requiredOption("--session <id>", "Workflow session ID")
+    .option("--json", "Emit structured idle status")
+    .action(waitCommand);
+
+  program
+    .command("transcript")
+    .description("Render the canonical transcript for a session.")
+    .requiredOption("--session <id>", "Workflow session ID")
+    .option("--json", "Emit structured transcript JSON instead of markdown")
+    .option("--output <path>", "Write the transcript to a file")
+    .option("--tee-temp", "Stream the transcript and save a temp copy")
+    .action(transcriptCommand);
+
+  program
+    .command("final")
+    .description(
+      "Inject a final prompt, wait for idle, return the last assistant message by default, and delete the session.",
+    )
+    .requiredOption("--session <id>", "Workflow session ID")
+    .requiredOption("--prompt <text>", "Final prompt text")
+    .option("--transcript", "Return the canonical transcript instead of the last assistant message")
+    .action(finalCommand);
+
+  program
+    .command("delete")
+    .description("Delete a prolonged session explicitly.")
+    .requiredOption("--session <id>", "Workflow session ID")
+    .action(deleteCommand);
+
+  const advanced = program
+    .command("advanced")
+    .description("Secondary operational commands that remain supported.");
+  advanced.helpInformation = advancedHelpText;
+
+  advanced
+    .command("provider-list")
+    .description("List providers seen in recent sessions.")
+    .action(async () => {
+      await cmdProviderList(makeClient());
+    });
+
+  advanced
+    .command("provider-health")
+    .description("Fire a minimal provider probe and report whether it is reachable.")
+    .requiredOption("--provider <id>", "Provider ID")
+    .option("--model <provider/model>", "Override model")
+    .action(async (options) => {
+      await cmdProviderHealth(makeClient(), {
+        model: options.model || false,
+        provider: options.provider,
+      });
+    });
+
+  const debug = program
+    .command("debug")
+    .description("Debugging-only commands.")
+    .showHelpAfterError();
+  debug.helpInformation = debugHelpText;
+
+  debug
+    .command("trace")
+    .requiredOption("--session <id>", "Workflow session ID")
+    .option("--timeout <sec>", "Timeout in seconds")
+    .option("--verbose", "Include verbose event data")
+    .option("--include-aborted", "Include aborted errors")
+    .option("--no-service-log", "Suppress service log lines")
+    .action((options) =>
+      cmdTrace(makeClient(), {
+        "include-aborted": !!options.includeAborted,
+        "no-service-log": !options.serviceLog,
+        session: options.session,
+        timeout: options.timeout || false,
+        verbose: !!options.verbose,
+      }),
+    );
+
+  debug
+    .command("errors")
+    .requiredOption("--session <id>", "Workflow session ID")
+    .action((options) => cmdErrors(makeClient(), { session: options.session }));
+
+  debug
+    .command("limit-errors")
+    .requiredOption("--session <id>", "Workflow session ID")
+    .option("--verbose", "Include full error objects")
+    .action((options) =>
+      cmdLimitErrors(makeClient(), {
+        session: options.session,
+        verbose: !!options.verbose,
+      }),
+    );
+
+  debug
+    .command("probe-limit")
+    .requiredOption("--model <provider/model>", "Target model")
+    .option("--agent <name>", "Override agent")
+    .option("--prompt <text>", "Override prompt")
+    .action((options) =>
+      cmdProbeLimit(makeClient(), {
+        agent: options.agent || false,
+        model: options.model,
+        prompt: options.prompt || false,
+      }),
+    );
+
+  debug
+    .command("probe-limit-known")
+    .requiredOption(
+      "--provider <id>",
+      "Provider key (anthropic|opencode-minimax|opencode-big-pickle)",
+    )
+    .option("--timeout <sec>", "Timeout in seconds")
+    .action((options) =>
+      cmdProbeLimitKnown({
+        provider: options.provider,
+        timeout: options.timeout || false,
+      }),
+    );
+
+  debug
+    .command("probe-limit-trace")
+    .requiredOption("--model <provider/model>", "Target model")
+    .option("--agent <name>", "Override agent")
+    .option("--timeout <sec>", "Timeout in seconds")
+    .option("--verbose", "Include full error rows")
+    .option("--include-aborted", "Include aborted errors")
+    .action((options) =>
+      cmdProbeLimitTrace(makeClient(), {
+        agent: options.agent || false,
+        "include-aborted": !!options.includeAborted,
+        model: options.model,
+        timeout: options.timeout || false,
+        verbose: !!options.verbose,
+      }),
+    );
+
+  debug
+    .command("probe-async-command")
+    .option("--model <provider/model>", "Override model")
+    .option("--agent <name>", "Override agent")
+    .action((options) =>
+      cmdProbeAsyncCommand(makeClient(), {
+        agent: options.agent || false,
+        model: options.model || false,
+      }),
+    );
+
+  debug
+    .command("probe-async-subagent")
+    .option("--model <provider/model>", "Override model")
+    .option("--agent <name>", "Override agent")
+    .action((options) =>
+      cmdProbeAsyncSubagent(makeClient(), {
+        agent: options.agent || false,
+        model: options.model || false,
+      }),
+    );
+
+  return program;
+}
+
+async function main() {
+  const program = buildProgram();
+  if (process.argv.length <= 2) {
+    process.stdout.write(`${program.helpInformation()}\n`);
+    return;
+  }
+
+  await program.parseAsync(process.argv);
+}
+
 main().catch((err) => {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as { code?: string }).code;
+    if (code === "commander.helpDisplayed") {
+      return;
+    }
+  }
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 });
