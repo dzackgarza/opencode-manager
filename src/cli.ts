@@ -7,9 +7,11 @@ import { basename, join, resolve } from "node:path";
 
 import { renderSessionTranscript } from "./session-harness";
 import {
+  assistantCompletionRequiresContinuation,
   buildPromptBody,
   extractObservedIdentity,
   formatModelRef,
+  latestAssistantMessageSince,
   latestAssistantMessage,
   parseModelRef,
   renderWorkflowOutput,
@@ -17,6 +19,7 @@ import {
 } from "./workflow";
 
 const REQUEST_TIMEOUT_MS = 180000;
+const TOOL_CONTINUATION_WAIT_MS = 2000;
 let RESOLVED_BASE_URL = "http://127.0.0.1:4096";
 let AUTH_HEADER = "";
 
@@ -512,6 +515,7 @@ async function waitForIdle(
 ): Promise<WaitResult> {
   const startMs = Date.now();
   const timeoutMs = timeoutSec * 1000;
+  const lingerMs = Math.max(0, lingerSec * 1000);
 
   // Track error state
   let lastErrorKind: string | null = null;
@@ -566,10 +570,16 @@ async function waitForIdle(
 
             // Completed assistant message signals end of a turn
             if (info.time?.completed) {
+              if (assistantCompletionRequiresContinuation(info.finish)) {
+                sm.state = "idle1";
+                lingerDeadlineMs =
+                  Date.now() + Math.max(lingerMs, TOOL_CONTINUATION_WAIT_MS);
+                continue;
+              }
               if (sm.state === "running") {
                 sm.state = "idle1";
-                if (lingerSec > 0) {
-                  lingerDeadlineMs = Date.now() + lingerSec * 1000;
+                if (lingerMs > 0) {
+                  lingerDeadlineMs = Date.now() + lingerMs;
                 } else {
                   sm.state = "done";
                   controller.abort();
@@ -854,6 +864,7 @@ async function completeWorkflowCommand(
   sessionClient: any,
   sessionID: string,
   context: SessionContext | null,
+  initialAssistantCount: number,
   transcriptRequested: boolean,
 ): Promise<string> {
   const result = await waitForIdle(sessionClient, sessionID, 0, 180, context);
@@ -870,8 +881,12 @@ async function completeWorkflowCommand(
   const transcript = await renderSessionTranscript(sessionID, {
     json: false,
   });
+  const assistantMessage = latestAssistantMessageSince(
+    messages,
+    initialAssistantCount,
+  );
   return renderWorkflowOutput({
-    assistantMessages: assistantTexts(messages),
+    assistantMessages: assistantMessage ? [assistantMessage] : [],
     transcript,
     transcriptRequested,
   });
@@ -2035,6 +2050,7 @@ async function runOneShotCommand(options: {
   );
 
   try {
+    const initialAssistantCount = 0;
     await queuePrompt(
       sessionClient,
       sessionID,
@@ -2049,6 +2065,7 @@ async function runOneShotCommand(options: {
       sessionClient,
       sessionID,
       context,
+      initialAssistantCount,
       !!options.transcript,
     );
     await deleteWorkflowSession(sessionClient, sessionID, context);
@@ -2176,7 +2193,9 @@ async function waitCommand(options: { json?: boolean; session: string }): Promis
     }
   }
 
-  const assistantMessage = latestAssistantMessage(assistantTexts(messages));
+  const assistantMessage = requiresNewAssistantTurn
+    ? latestAssistantMessageSince(messages, initialAssistantCount)
+    : latestAssistantMessage(assistantTexts(messages));
   if (options.json) {
     console.log(
       JSON.stringify(
@@ -2219,6 +2238,9 @@ async function finalCommand(options: {
   const { client: sessionClient, context } = await makeSessionClient(
     options.session,
   );
+  const initialAssistantCount = assistantMessages(
+    await loadSessionMessages(sessionClient, options.session, context),
+  ).length;
 
   await queueWorkflowPrompt(
     sessionClient,
@@ -2231,6 +2253,7 @@ async function finalCommand(options: {
     sessionClient,
     options.session,
     context,
+    initialAssistantCount,
     !!options.transcript,
   );
   await deleteWorkflowSession(sessionClient, options.session, context);

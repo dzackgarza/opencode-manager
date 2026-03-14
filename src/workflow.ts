@@ -13,11 +13,16 @@ export type ResponderIdentity = {
 export type SessionMessageLike = {
   info?: {
     agent?: string;
+    finish?: string;
     model?: ModelRef;
     modelID?: string;
     providerID?: string;
     role?: string;
   };
+  parts?: Array<{
+    text?: string;
+    type?: string;
+  }>;
 };
 
 type PromptBodyInput = {
@@ -37,6 +42,33 @@ export function latestAssistantMessage(
 ): string | null {
   const lastAssistant = assistantMessages.at(-1)?.trim();
   return lastAssistant ? lastAssistant : null;
+}
+
+export function assistantCompletionRequiresContinuation(
+  finish: string | null | undefined,
+): boolean {
+  return finish === "tool-calls";
+}
+
+function flattenAssistantText(parts: Array<{ text?: string; type?: string }> = []): string {
+  return parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+}
+
+export function latestAssistantMessageSince(
+  messages: SessionMessageLike[],
+  initialAssistantCount: number,
+): string | null {
+  const newAssistantTexts = messages
+    .filter((message) => message.info?.role === "assistant")
+    .slice(initialAssistantCount)
+    .map((message) => flattenAssistantText(message.parts))
+    .filter((text) => text.length > 0);
+
+  return latestAssistantMessage(newAssistantTexts);
 }
 
 export function formatModelRef(model: ModelRef): string {

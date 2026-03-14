@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  assistantCompletionRequiresContinuation,
   buildPromptBody,
   extractObservedIdentity,
+  latestAssistantMessageSince,
   latestAssistantMessage,
   renderWorkflowOutput,
 } from "../src/workflow";
@@ -176,5 +178,49 @@ describe("workflow helpers", () => {
         },
       ],
     });
+  });
+
+  it("treats tool-calls completions as needing a follow-up assistant message", () => {
+    expect(assistantCompletionRequiresContinuation("tool-calls")).toBe(true);
+    expect(assistantCompletionRequiresContinuation("stop")).toBe(false);
+    expect(assistantCompletionRequiresContinuation(undefined)).toBe(false);
+  });
+
+  it("returns only assistant text recorded after the awaited turn started", () => {
+    const messages = [
+      {
+        info: { role: "assistant" },
+        parts: [{ type: "text", text: "READY" }],
+      },
+      {
+        info: { finish: "tool-calls", role: "assistant" },
+        parts: [{ type: "tool" }],
+      },
+      {
+        info: { finish: "stop", role: "assistant" },
+        parts: [{ type: "text", text: "LISTED" }],
+      },
+    ];
+
+    expect(latestAssistantMessageSince(messages, 1)).toBe("LISTED");
+  });
+
+  it("does not fall back to stale assistant text when the awaited turn emitted none", () => {
+    const messages = [
+      {
+        info: { role: "assistant" },
+        parts: [{ type: "text", text: "READY" }],
+      },
+      {
+        info: { finish: "tool-calls", role: "assistant" },
+        parts: [{ type: "tool" }],
+      },
+      {
+        info: { finish: "unknown", role: "assistant" },
+        parts: [],
+      },
+    ];
+
+    expect(latestAssistantMessageSince(messages, 1)).toBeNull();
   });
 });
