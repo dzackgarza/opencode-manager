@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   buildPromptBody,
+  extractObservedIdentity,
   renderWorkflowOutput,
 } from "../src/workflow";
 
@@ -54,6 +55,54 @@ describe("workflow helpers", () => {
     });
   });
 
+  it("omits responder identity when no assistant history exists yet", () => {
+    expect(extractObservedIdentity([])).toEqual({});
+    expect(
+      buildPromptBody({
+        identity: {},
+        prompt: "Use configured defaults.",
+        visibility: "chat",
+      }),
+    ).toEqual({
+      parts: [
+        {
+          type: "text",
+          text: "Use configured defaults.",
+        },
+      ],
+    });
+  });
+
+  it("derives continuation identity from the latest message carrying responder fields", () => {
+    const messages = [
+      {
+        info: {
+          agent: "Interactive",
+          modelID: "gemini-2.5-pro",
+          providerID: "google",
+          role: "assistant",
+        },
+      },
+      {
+        info: {
+          agent: "Minimal",
+          model: {
+            modelID: "claude-sonnet-4.6",
+            providerID: "github-copilot",
+          },
+          role: "user",
+        },
+      },
+    ];
+    expect(extractObservedIdentity(messages)).toEqual({
+      agent: "Minimal",
+      model: {
+        modelID: "claude-sonnet-4.6",
+        providerID: "github-copilot",
+      },
+    });
+  });
+
   it("returns the last assistant message by default and the transcript when requested", () => {
     const transcript = "# OpenCode Session Transcript\n\nhello";
 
@@ -84,33 +133,44 @@ describe("workflow helpers", () => {
     ).toThrow("No assistant reply was recorded");
   });
 
-  it("normalizes missing responder identity into a continuation error", () => {
-    expect(() =>
-      buildPromptBody({
-        identity: {
-          agent: "",
-          model: {
-            modelID: "claude-sonnet-4.6",
-            providerID: "github-copilot",
-          },
-        },
-        prompt: "Hello",
-        visibility: "chat",
-      }),
-    ).toThrow("Stored responder identity is incomplete");
-
-    expect(() =>
-      buildPromptBody({
-        identity: {
+  it("preserves a non-default observed model in later prompt bodies", () => {
+    const identity = extractObservedIdentity([
+      {
+        info: {
           agent: "Minimal",
-          model: {
-            modelID: "",
-            providerID: "github-copilot",
-          },
+          modelID: "o3",
+          providerID: "openai",
+          role: "assistant",
         },
-        prompt: "Hello",
+      },
+    ]);
+
+    expect(identity).toEqual({
+      agent: "Minimal",
+      model: {
+        modelID: "o3",
+        providerID: "openai",
+      },
+    });
+
+    expect(
+      buildPromptBody({
+        identity,
+        prompt: "Continue with the same responder.",
         visibility: "chat",
       }),
-    ).toThrow("Stored responder identity is incomplete");
+    ).toEqual({
+      agent: "Minimal",
+      model: {
+        modelID: "o3",
+        providerID: "openai",
+      },
+      parts: [
+        {
+          type: "text",
+          text: "Continue with the same responder.",
+        },
+      ],
+    });
   });
 });

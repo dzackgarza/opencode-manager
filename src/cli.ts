@@ -8,15 +8,11 @@ import { basename, join, resolve } from "node:path";
 import { renderSessionTranscript } from "./session-harness";
 import {
   buildPromptBody,
-  deleteWorkflowState,
+  extractObservedIdentity,
   formatModelRef,
-  loadWorkflowState,
   parseModelRef,
   renderWorkflowOutput,
-  requireStoredIdentity,
-  saveWorkflowState,
   type ModelRef,
-  type WorkflowSessionState,
 } from "./workflow";
 
 const REQUEST_TIMEOUT_MS = 180000;
@@ -762,24 +758,6 @@ function assistantTexts(messages: Array<any>): string[] {
     .filter((text) => text.length > 0);
 }
 
-function workflowStateFromSession(
-  sessionID: string,
-  context: SessionContext | null,
-  title: string,
-  agent?: string,
-  model?: ModelRef,
-): WorkflowSessionState {
-  return {
-    createdAt: Date.now(),
-    directory: context?.directory,
-    model: model ?? null,
-    responderAgent: agent ?? null,
-    sessionID,
-    title,
-    workspaceID: context?.workspaceID,
-  };
-}
-
 async function fetchSessionUpdatedAt(
   sessionID: string,
   context?: SessionContext | null,
@@ -829,17 +807,13 @@ async function waitForSessionMutation(
 async function queueWorkflowPrompt(
   sessionClient: any,
   sessionID: string,
-  state: Pick<WorkflowSessionState, "directory" | "workspaceID" | "model" | "responderAgent">,
   prompt: string,
   visibility: "chat" | "system",
 ): Promise<void> {
-  const context = {
-    directory: state.directory,
-    workspaceID: state.workspaceID,
-  };
-  const identity = requireStoredIdentity(state);
+  const { context } = await makeSessionClient(sessionID);
   const initialMessages = await loadSessionMessages(sessionClient, sessionID, context);
   const initialUpdatedAt = await fetchSessionUpdatedAt(sessionID, context);
+  const identity = extractObservedIdentity(initialMessages);
 
   await promptAsyncRequest(
     sessionID,
@@ -1988,7 +1962,7 @@ function topLevelHelpText(): string {
     "",
     "WORKFLOW COMMANDS:",
     "  one-shot --prompt <text> [--agent <name>] [--model provider/model] [--transcript]",
-    "  begin-session [--agent <name>] [--model provider/model] [--json]",
+    "  begin-session <prompt> [--agent <name>] [--model provider/model] [--json]",
     "  chat --session <id> --prompt <text> [--no-reply]",
     "  system --session <id> --prompt <text> [--no-reply]",
     "  wait --session <id> [--json]",
@@ -2078,39 +2052,51 @@ async function beginSessionCommand(options: {
   agent?: string;
   json?: boolean;
   model?: string;
+  prompt: string;
 }): Promise<void> {
   const client = makeClient();
-  const parsedModel = options.model ? parseModelRef(options.model) : undefined;
   const title = `opx:session:${Date.now()}`;
-  const { sessionID, context } = await createWorkflowSession(client, title);
-  await saveWorkflowState(
-    workflowStateFromSession(
-      sessionID,
-      context,
-      title,
-      options.agent,
-      parsedModel,
-    ),
+  const { sessionID, context, sessionClient } = await createWorkflowSession(
+    client,
+    title,
   );
 
-  if (options.json) {
-    console.log(
-      JSON.stringify(
-        {
-          agent: options.agent ?? null,
-          directory: context?.directory ?? null,
-          model: parsedModel ? formatModelRef(parsedModel) : null,
-          sessionID,
-          workspaceID: context?.workspaceID ?? null,
-        },
-        null,
-        2,
-      ),
+  try {
+    await queuePrompt(
+      sessionClient,
+      sessionID,
+      options.prompt,
+      {
+        agent: options.agent || false,
+        model: options.model || false,
+      },
+      context,
     );
-    return;
-  }
 
-  console.log(`Started session ${sessionID}.`);
+    if (options.json) {
+      console.log(
+        JSON.stringify(
+          {
+            directory: context?.directory ?? null,
+            sessionID,
+            workspaceID: context?.workspaceID ?? null,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    console.log(`Accepted initial prompt for ${sessionID}.`);
+  } catch (error) {
+    try {
+      await deleteWorkflowSession(sessionClient, sessionID, context);
+    } catch {
+      // Preserve the original startup failure if cleanup also fails.
+    }
+    throw error;
+  }
 }
 
 async function enqueueContinuedPrompt(options: {
@@ -2119,16 +2105,11 @@ async function enqueueContinuedPrompt(options: {
   session: string;
   visibility: "chat" | "system";
 }): Promise<void> {
-  const state = await loadWorkflowState(options.session);
-  const { client: sessionClient, context } = await makeSessionClient(
-    options.session,
-    state,
-  );
+  const { client: sessionClient } = await makeSessionClient(options.session);
 
   await queueWorkflowPrompt(
     sessionClient,
     options.session,
-    state,
     options.prompt,
     options.visibility,
   );
@@ -2171,16 +2152,13 @@ async function finalCommand(options: {
   session: string;
   transcript?: boolean;
 }): Promise<void> {
-  const state = await loadWorkflowState(options.session);
   const { client: sessionClient, context } = await makeSessionClient(
     options.session,
-    state,
   );
 
   await queueWorkflowPrompt(
     sessionClient,
     options.session,
-    state,
     options.prompt,
     "chat",
   );
@@ -2192,14 +2170,12 @@ async function finalCommand(options: {
     !!options.transcript,
   );
   await deleteWorkflowSession(sessionClient, options.session, context);
-  await deleteWorkflowState(options.session);
   process.stdout.write(`${output.trimEnd()}\n`);
 }
 
 async function deleteCommand(options: { session: string }): Promise<void> {
   const { client, context } = await makeSessionClient(options.session);
   await deleteWorkflowSession(client, options.session, context);
-  await deleteWorkflowState(options.session);
   console.log(`Deleted session ${options.session}.`);
 }
 
@@ -2225,12 +2201,13 @@ function buildProgram(): Command {
   program
     .command("begin-session")
     .description(
-      "Create a prolonged session, persist responder identity metadata, and return the session handle.",
+      "Create a prolonged session, inject the initial prompt immediately, and return the session handle.",
     )
-    .option("--agent <name>", "Responder agent stored for later continued prompts")
-    .option("--model <provider/model>", "Responder model stored for later continued prompts")
+    .argument("<prompt>", "Initial prompt text")
+    .option("--agent <name>", "Responder agent for the initial prompt")
+    .option("--model <provider/model>", "Responder model for the initial prompt")
     .option("--json", "Emit structured session metadata")
-    .action(beginSessionCommand);
+    .action((prompt, options) => beginSessionCommand({ ...options, prompt }));
 
   program
     .command("chat")

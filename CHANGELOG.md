@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.0.0
+
+### Breaking Changes
+
+- `opx begin-session` now requires the initial prompt as a positional
+  argument:
+  - old: `opx begin-session [--agent ...] [--model ...] [--json]`
+  - new: `opx begin-session <prompt> [--agent ...] [--model ...] [--json]`
+- `begin-session` no longer creates an empty prolonged session. Session
+  creation and first prompt submission are now one workflow step.
+- `begin-session --json` no longer echoes requested responder knobs. It returns
+  the created session handle and context only.
+- Prolonged-session continuation no longer relies on manager-owned persisted
+  responder metadata. Continued prompts derive the active agent/model from the
+  live session history.
+
+### Fixed
+
+- Fixed the invalid empty-session workflow that could create a session record
+  without any initial conversational turn.
+- Fixed explicit startup responder selection for prolonged sessions so the
+  first turn now records the requested `--agent` / `--model` instead of
+  falling back to OpenCode defaults.
+- Fixed continuation so later `chat`, `system`, and `final` prompts reuse the
+  session's observed responder identity without exposing public mid-session
+  agent/model overrides.
+- Fixed top-level and command help so the public workflow matches the actual
+  CLI contract.
+
+### Changed
+
+- README now documents the corrected prolonged-session workflow with a
+  required initial prompt and live session-derived continuation identity.
+- Removed the obsolete redesign implementation plan file now that the work is
+  represented by the shipped CLI contract, tests, and changelog.
+
 ## 1.0.0
 
 ### Breaking Changes

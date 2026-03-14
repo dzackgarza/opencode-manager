@@ -23,7 +23,9 @@ describe("opx help surface", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("WORKFLOW COMMANDS:");
     expect(result.stdout).toContain("  one-shot --prompt <text>");
-    expect(result.stdout).toContain("  begin-session");
+    expect(result.stdout).toContain(
+      "  begin-session <prompt> [--agent <name>] [--model provider/model] [--json]",
+    );
     expect(result.stdout).toContain("  chat --session <id> --prompt <text>");
     expect(result.stdout).toContain("  system --session <id> --prompt <text>");
     expect(result.stdout).toContain("  final --session <id> --prompt <text>");
@@ -65,5 +67,20 @@ describe("opx help surface", () => {
     expect(result.stdout).toContain("return the last assistant message");
     expect(result.stdout).toContain("--transcript");
     expect(result.stdout).not.toContain("--keep");
+  });
+
+  it("requires a positional initial prompt for begin-session", async () => {
+    const result = await runCli(["begin-session", "--help"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("begin-session [options] <prompt>");
+    expect(result.stdout).not.toContain("--prompt");
+  });
+
+  it("rejects the old empty begin-session form", async () => {
+    const result = await runCli(["begin-session"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("missing required argument 'prompt'");
   });
 });

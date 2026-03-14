@@ -66,8 +66,8 @@ Use `begin-session` plus follow-up commands when the session must stay alive
 across turns.
 
 ```bash
-opx begin-session --agent Minimal --model github-copilot/claude-sonnet-4.6
-opx chat --session ses_123 --prompt "Inspect the README."
+opx begin-session "Inspect the README." --agent Minimal --model github-copilot/gpt-5-mini
+opx chat --session ses_123 --prompt "Now inspect the justfile."
 opx system --session ses_123 --prompt "Stay terse." --no-reply
 opx wait --session ses_123
 opx transcript --session ses_123
@@ -76,8 +76,8 @@ opx final --session ses_123 --prompt "Reply with ONLY DONE."
 
 Behavior:
 
-- `begin-session` creates the session and stores workflow metadata
-- `chat` injects a user-visible prompt
+- `begin-session` creates the session and injects the initial user-visible prompt
+- `chat` injects later user-visible prompts
 - `system` injects an agent-only prompt
 - prompts advance by default
 - `--no-reply` queues without allowing continuation
@@ -93,12 +93,10 @@ Responder identity is the pair:
 - `--agent <name>`
 - `--model provider/model`
 
-For prolonged sessions this identity is fixed at creation time and reused for
-every continued prompt. Continued-session commands do not accept per-turn
+For prolonged sessions this identity is fixed by the first prompt, whether it
+was explicit or came from OpenCode defaults. Continued-session commands derive
+that identity from the live session transcript and do not accept per-turn
 overrides.
-
-If stored responder identity is missing or invalid, continued prompt commands
-fail loudly.
 
 ## Commands
 
@@ -106,7 +104,7 @@ fail loudly.
 
 ```bash
 opx one-shot --prompt <text> [--agent <name>] [--model provider/model] [--transcript]
-opx begin-session [--agent <name>] [--model provider/model] [--json]
+opx begin-session <prompt> [--agent <name>] [--model provider/model] [--json]
 opx chat --session <id> --prompt <text> [--no-reply]
 opx system --session <id> --prompt <text> [--no-reply]
 opx wait --session <id> [--json]
