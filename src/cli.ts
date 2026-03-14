@@ -759,6 +759,20 @@ function assistantTexts(messages: Array<any>): string[] {
     .filter((text) => text.length > 0);
 }
 
+function assistantMessages(messages: Array<any>): Array<any> {
+  return messages.filter((message) => message.info?.role === "assistant");
+}
+
+function latestMessageRole(messages: Array<any>): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const role = messages[index]?.info?.role;
+    if (typeof role === "string" && role.length > 0) {
+      return role;
+    }
+  }
+  return null;
+}
+
 async function fetchSessionUpdatedAt(
   sessionID: string,
   context?: SessionContext | null,
@@ -2125,8 +2139,43 @@ async function enqueueContinuedPrompt(options: {
 
 async function waitCommand(options: { json?: boolean; session: string }): Promise<void> {
   const { client, context } = await makeSessionClient(options.session);
-  const result = await waitForIdle(client, options.session, 0, 180, context);
-  const messages = await loadSessionMessages(client, options.session, context);
+  const initialMessages = await loadSessionMessages(client, options.session, context);
+  const initialAssistantCount = assistantMessages(initialMessages).length;
+  const requiresNewAssistantTurn = latestMessageRole(initialMessages) === "user";
+  const deadline = Date.now() + 180_000;
+
+  let result: WaitResult = {
+    errorKind: null,
+    exitCode: 0,
+    timedOut: false,
+  };
+  let messages = initialMessages;
+
+  while (true) {
+    const remainingMs = deadline - Date.now();
+    const timeoutSec = Math.max(1, Math.ceil(remainingMs / 1000));
+    result = await waitForIdle(client, options.session, 0, timeoutSec, context);
+    messages = await loadSessionMessages(client, options.session, context);
+
+    if (
+      !requiresNewAssistantTurn ||
+      result.exitCode !== 0 ||
+      result.timedOut ||
+      assistantMessages(messages).length > initialAssistantCount
+    ) {
+      break;
+    }
+
+    if (Date.now() >= deadline) {
+      result = {
+        ...result,
+        exitCode: 1,
+        timedOut: true,
+      };
+      break;
+    }
+  }
+
   const assistantMessage = latestAssistantMessage(assistantTexts(messages));
   if (options.json) {
     console.log(
