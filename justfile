@@ -1,3 +1,6 @@
+install:
+    bun install
+
 # Setup npm trusted publisher (one-time manual setup)
 setup-npm-trust:
     npm trust github --repository dzackgarza/opencode-manager --file publish.yml
