@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { spawn } from "child_process";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 
 import { renderSessionTranscript } from "./session-harness";
 
@@ -623,37 +625,175 @@ async function waitForIdle(
 }
 
 // ---------------------------------------------------------------------------
-// opx run / opx resume (primary public API)
+// Public workflow helpers
+// ---------------------------------------------------------------------------
+
+async function createWorkflowSession(
+  client: any,
+  title?: string,
+): Promise<{ sessionID: string; context: SessionContext | null; sessionClient: any }> {
+  const creationContext = currentSessionContext();
+  const created = await client.session.create({
+    ...sessionSdkOptions(creationContext),
+    body: { title: title || `opx:${Date.now()}` },
+  });
+  const sessionID = created.data?.id;
+  if (!sessionID) throw new Error("Failed to create session");
+  const context =
+    sessionContextFromSession(created.data) ??
+    (await fetchSessionContext(sessionID));
+  return { sessionID, context, sessionClient: makeClient() };
+}
+
+async function deleteWorkflowSession(
+  sessionClient: any,
+  sessionID: string,
+  context?: SessionContext | null,
+) {
+  await sessionClient.session.delete({
+    ...sessionSdkOptions(context),
+    path: { id: sessionID },
+  });
+}
+
+async function loadSessionMessages(
+  sessionClient: any,
+  sessionID: string,
+  context?: SessionContext | null,
+): Promise<Array<any>> {
+  const result = await sessionClient.session.messages({
+    ...sessionSdkOptions(context),
+    path: { id: sessionID },
+  });
+  return result.data ?? [];
+}
+
+async function waitForPromptRecording(
+  sessionClient: any,
+  sessionID: string,
+  prompt: string,
+  initialCount: number,
+  context?: SessionContext | null,
+): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const messages = await loadSessionMessages(sessionClient, sessionID, context);
+    if (
+      messages.length > initialCount &&
+      messages
+        .slice(initialCount)
+        .some((message) => message.info?.role === "user" && flattenText(message.parts ?? []) === prompt)
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  throw new Error(
+    "prompt injection did not record a new user message; refusing to report success",
+  );
+}
+
+async function queuePrompt(
+  sessionClient: any,
+  sessionID: string,
+  prompt: string,
+  args: KV,
+  context?: SessionContext | null,
+): Promise<void> {
+  const initialMessages = await loadSessionMessages(sessionClient, sessionID, context);
+  await promptAsyncRequest(
+    sessionID,
+    {
+      agent: getString(args, "agent") || undefined,
+      model: parseModel(getString(args, "model")),
+      parts: [{ type: "text", text: prompt }],
+    },
+    context,
+  );
+  await waitForPromptRecording(
+    sessionClient,
+    sessionID,
+    prompt,
+    initialMessages.length,
+    context,
+  );
+}
+
+function printSessionHandle(
+  sessionID: string,
+  context: SessionContext | null,
+  json = false,
+) {
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          sessionID,
+          directory: context?.directory ?? null,
+          workspaceID: context?.workspaceID ?? null,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  console.log(sessionID);
+}
+
+async function writeTranscriptOutput(
+  sessionID: string,
+  args: KV,
+): Promise<void> {
+  const outputPath = getString(args, "output");
+  const teeTemp = hasFlag(args, "tee-temp");
+  if (outputPath && teeTemp) {
+    throw new Error("transcript accepts either --output <path> or --tee-temp, not both.");
+  }
+
+  const savePath = outputPath
+    ? resolve(outputPath)
+    : teeTemp
+      ? join(
+          tmpdir(),
+          `opx-transcript-${basename(sessionID)}-${Date.now()}.${hasFlag(args, "json") ? "json" : "md"}`,
+        )
+      : undefined;
+
+  const transcript = await renderSessionTranscript(sessionID, {
+    json: hasFlag(args, "json"),
+    savedCopyPath: savePath,
+  });
+
+  if (savePath) {
+    await Bun.write(savePath, transcript);
+  }
+
+  if (!outputPath || teeTemp) {
+    process.stdout.write(transcript);
+    return;
+  }
+
+  console.log(savePath);
+}
+
+// ---------------------------------------------------------------------------
+// opx public workflow commands
 // ---------------------------------------------------------------------------
 
 async function cmdRun(client: any, args: KV): Promise<void> {
   const prompt = getString(args, "prompt");
   if (!prompt) throw new Error("run requires --prompt");
 
-  const model = parseModel(getString(args, "model"));
-  const agent = getString(args, "agent") || undefined;
   const lingerSec = Number(getString(args, "linger", "0"));
   const timeoutSec = Number(getString(args, "timeout", "180"));
   const keep = hasFlag(args, "keep");
 
-  const creationContext = currentSessionContext();
-  const created = await client.session.create({
-    ...sessionSdkOptions(creationContext),
-    body: { title: `opx:${Date.now()}` },
-  });
-  const sessionID = created.data?.id;
-  if (!sessionID) throw new Error("Failed to create session");
-  const sessionContext =
-    sessionContextFromSession(created.data) ??
-    (await fetchSessionContext(sessionID));
-  const sessionClient = makeClient();
-
+  const { sessionID, context: sessionContext, sessionClient } =
+    await createWorkflowSession(client);
   // Send prompt async and wait via SSE
-  await promptAsyncRequest(sessionID, {
-    agent,
-    model,
-    parts: [{ type: "text", text: prompt }],
-  }, sessionContext);
+  await queuePrompt(sessionClient, sessionID, prompt, args, sessionContext);
 
   const result = await waitForIdle(
     sessionClient,
@@ -670,10 +810,7 @@ async function cmdRun(client: any, args: KV): Promise<void> {
   // Session cleanup — delete unless --keep was explicitly passed
   if (!keep) {
     try {
-      await sessionClient.session.delete({
-        ...sessionSdkOptions(sessionContext),
-        path: { id: sessionID },
-      });
+      await deleteWorkflowSession(sessionClient, sessionID, sessionContext);
     } catch {
       // best-effort
     }
@@ -702,11 +839,17 @@ async function cmdResume(client: any, args: KV): Promise<void> {
   const { client: sessionClient, context: sessionContext } =
     await makeSessionClient(sessionID);
 
-  await promptAsyncRequest(sessionID, {
-    agent,
-    model,
-    parts: [{ type: "text", text: prompt }],
-  }, sessionContext);
+  await queuePrompt(
+    sessionClient,
+    sessionID,
+    prompt,
+    {
+      ...args,
+      agent: agent || false,
+      model: model ? `${model.providerID}/${model.modelID}` : false,
+    },
+    sessionContext,
+  );
 
   const result = await waitForIdle(
     sessionClient,
@@ -722,10 +865,7 @@ async function cmdResume(client: any, args: KV): Promise<void> {
   // Session cleanup — delete unless --keep was explicitly passed
   if (!keep) {
     try {
-      await sessionClient.session.delete({
-        ...sessionSdkOptions(sessionContext),
-        path: { id: sessionID },
-      });
+      await deleteWorkflowSession(sessionClient, sessionID, sessionContext);
     } catch {
       // best-effort
     }
@@ -738,6 +878,94 @@ async function cmdResume(client: any, args: KV): Promise<void> {
   }
 
   process.exitCode = result.exitCode;
+}
+
+async function cmdStart(client: any, args: KV): Promise<void> {
+  const title = getString(args, "title");
+  const { sessionID, context } = await createWorkflowSession(client, title);
+  printSessionHandle(sessionID, context, hasFlag(args, "json"));
+}
+
+async function cmdPrompt(client: any, args: KV): Promise<void> {
+  const sessionID = getString(args, "session");
+  const prompt = getString(args, "prompt");
+  if (!sessionID) throw new Error("prompt requires --session");
+  if (!prompt) throw new Error("prompt requires --prompt");
+
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(sessionID);
+  await queuePrompt(sessionClient, sessionID, prompt, args, sessionContext);
+
+  if (hasFlag(args, "wait")) {
+    const lingerSec = Number(getString(args, "linger", "0"));
+    const timeoutSec = Number(getString(args, "timeout", "180"));
+    const result = await waitForIdle(
+      sessionClient,
+      sessionID,
+      lingerSec,
+      timeoutSec,
+      sessionContext,
+    );
+    const transcript = await generateTranscript(sessionID);
+    process.stdout.write(transcript);
+    if (result.timedOut) {
+      console.error(`[opx] timed out after ${timeoutSec}s`);
+    }
+    process.exitCode = result.exitCode;
+    return;
+  }
+
+  printSessionHandle(sessionID, sessionContext, hasFlag(args, "json"));
+}
+
+async function cmdWait(client: any, args: KV): Promise<void> {
+  const sessionID = getString(args, "session");
+  if (!sessionID) throw new Error("wait requires --session");
+
+  const lingerSec = Number(getString(args, "linger", "0"));
+  const timeoutSec = Number(getString(args, "timeout", "180"));
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(sessionID);
+  const result = await waitForIdle(
+    sessionClient,
+    sessionID,
+    lingerSec,
+    timeoutSec,
+    sessionContext,
+  );
+  if (hasFlag(args, "json")) {
+    console.log(JSON.stringify({ sessionID, ...result }, null, 2));
+  } else {
+    console.log(sessionID);
+  }
+  if (result.timedOut) {
+    console.error(`[opx] timed out after ${timeoutSec}s`);
+  }
+  process.exitCode = result.exitCode;
+}
+
+async function cmdMessages(client: any, args: KV): Promise<void> {
+  const sessionID = getString(args, "session");
+  if (!sessionID) throw new Error("messages requires --session");
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(sessionID);
+  const messages = await loadSessionMessages(sessionClient, sessionID, sessionContext);
+  console.log(JSON.stringify(messages, null, 2));
+}
+
+async function cmdTranscript(client: any, args: KV): Promise<void> {
+  const sessionID = getString(args, "session");
+  if (!sessionID) throw new Error("transcript requires --session");
+  await writeTranscriptOutput(sessionID, args);
+}
+
+async function cmdDelete(client: any, args: KV): Promise<void> {
+  const sessionID = getString(args, "session");
+  if (!sessionID) throw new Error("delete requires --session");
+  const { client: sessionClient, context: sessionContext } =
+    await makeSessionClient(sessionID);
+  await deleteWorkflowSession(sessionClient, sessionID, sessionContext);
+  console.log(sessionID);
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,19 +1582,19 @@ function help() {
   const text = [
     "opx — OpenCode automation harness",
     "",
-    "PRIMARY COMMANDS:",
+    "WORKFLOW COMMANDS:",
     "  run   --prompt <text> [--model provider/model] [--agent <name>] [--linger <sec>] [--keep] [--timeout <sec>]",
+    "  start [--title <text>] [--json]",
+    "  prompt --session <id> --prompt <text> [--agent <name>] [--model provider/model] [--wait] [--linger <sec>] [--timeout <sec>] [--json]",
+    "  wait --session <id> [--linger <sec>] [--timeout <sec>] [--json]",
+    "  messages --session <id>",
+    "  transcript --session <id> [--json] [--output PATH | --tee-temp]",
+    "  delete --session <id>",
     "  resume --session <id> --prompt <text> [--model provider/model] [--agent <name>] [--linger <sec>] [--keep] [--timeout <sec>]",
     "",
-    "SESSION COMMANDS:",
-    "  session delete --session <id>",
-    "  session messages --session <id>",
-    "",
-    "PROVIDER COMMANDS:",
+    "ADVANCED COMMANDS:",
     "  provider list",
     "  provider health --provider <id> [--model provider/model]",
-    "",
-    "DEBUG COMMANDS:",
     "  debug trace --session <id> [--timeout <sec>] [--verbose] [--include-aborted] [--no-service-log]",
     "  debug errors --session <id>",
     "  debug limit-errors --session <id> [--verbose]",
@@ -1377,6 +1605,7 @@ function help() {
     "  debug probe-async-subagent [--model provider/model] [--agent <name>]",
     "",
     "Run any command with --help for detailed usage.",
+    "Internal surfaces stay behind explicit subcommands such as `opx session --help`.",
     "",
     "EXIT CODES:",
     "  0 = success",
@@ -1421,6 +1650,90 @@ function helpRun() {
   );
 }
 
+function helpStart() {
+  console.log(
+    [
+      "opx start — create a workflow session and print its session ID",
+      "",
+      "USAGE:",
+      "  opx start [--title <text>] [--json]",
+      "",
+      "OPTIONS:",
+      "  --title <text>   Optional session title",
+      "  --json           Emit { sessionID, directory, workspaceID }",
+    ].join("\n"),
+  );
+}
+
+function helpPrompt() {
+  console.log(
+    [
+      "opx prompt — inject a prompt into an existing workflow session",
+      "",
+      "USAGE:",
+      "  opx prompt --session <id> --prompt <text> [options]",
+      "",
+      "OPTIONS:",
+      "  --session <id>           (required) Session ID to target",
+      "  --prompt <text>          (required) Prompt text to inject",
+      "  --agent <name>           Explicit agent override",
+      "  --model provider/model   Explicit model override",
+      "  --wait                   Wait for idle and print transcript after injection",
+      "  --linger <sec>           Extra idle wait when --wait is used. Default: 0.",
+      "  --timeout <sec>          Hard wait timeout when --wait is used. Default: 180.",
+      "  --json                   Emit { sessionID, directory, workspaceID } when not waiting",
+      "",
+      "CONTRACT:",
+      "  Success means the prompt was recorded as a new user message.",
+      "  If recording cannot be verified, the command fails instead of silently succeeding.",
+    ].join("\n"),
+  );
+}
+
+function helpWait() {
+  console.log(
+    [
+      "opx wait — wait for the next idle boundary on a session",
+      "",
+      "USAGE:",
+      "  opx wait --session <id> [--linger <sec>] [--timeout <sec>] [--json]",
+    ].join("\n"),
+  );
+}
+
+function helpMessages() {
+  console.log(
+    [
+      "opx messages — dump session messages as JSON",
+      "",
+      "USAGE:",
+      "  opx messages --session <id>",
+    ].join("\n"),
+  );
+}
+
+function helpTranscript() {
+  console.log(
+    [
+      "opx transcript — render a session transcript from the live server",
+      "",
+      "USAGE:",
+      "  opx transcript --session <id> [--json] [--output PATH | --tee-temp]",
+    ].join("\n"),
+  );
+}
+
+function helpDelete() {
+  console.log(
+    [
+      "opx delete — delete a workflow session",
+      "",
+      "USAGE:",
+      "  opx delete --session <id>",
+    ].join("\n"),
+  );
+}
+
 function helpResume() {
   console.log(
     [
@@ -1450,13 +1763,14 @@ function helpResume() {
 function helpSession() {
   console.log(
     [
-      "opx session — manage sessions created by opx",
+      "opx session — internal session subcommands",
       "",
       "SUBCOMMANDS:",
       "  session delete   --session <id>   Delete a specific session",
       "  session messages --session <id>   Dump all messages as JSON",
       "",
-      "NOTE: Use `opencode session list` to browse sessions on the server.",
+      "This surface is internal and intentionally omitted from the primary workflow help.",
+      "Use the top-level workflow commands unless you are debugging CLI internals.",
     ].join("\n"),
   );
 }
@@ -1534,6 +1848,48 @@ async function main() {
         break;
       }
       await cmdRun(client, args);
+      break;
+    case "start":
+      if (hasFlag(args, "help")) {
+        helpStart();
+        break;
+      }
+      await cmdStart(client, args);
+      break;
+    case "prompt":
+      if (hasFlag(args, "help")) {
+        helpPrompt();
+        break;
+      }
+      await cmdPrompt(client, args);
+      break;
+    case "wait":
+      if (hasFlag(args, "help")) {
+        helpWait();
+        break;
+      }
+      await cmdWait(client, args);
+      break;
+    case "messages":
+      if (hasFlag(args, "help")) {
+        helpMessages();
+        break;
+      }
+      await cmdMessages(client, args);
+      break;
+    case "transcript":
+      if (hasFlag(args, "help")) {
+        helpTranscript();
+        break;
+      }
+      await cmdTranscript(client, args);
+      break;
+    case "delete":
+      if (hasFlag(args, "help")) {
+        helpDelete();
+        break;
+      }
+      await cmdDelete(client, args);
       break;
     case "resume":
       if (hasFlag(args, "help")) {

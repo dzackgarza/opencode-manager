@@ -9,8 +9,9 @@ This Bun-based package automates OpenCode sessions via GitHub and `npx`.
 ## Features
 
 - `opx run` — create session, send prompt, wait for idle, print transcript, auto-delete
+- `opx start` / `opx prompt` / `opx wait` / `opx messages` / `opx transcript` / `opx delete` — progressive workflow commands for multi-step automation
 - `opx resume` — send follow-up prompts to existing sessions
-- `opx session` / `opx provider` / `opx debug` — session management, provider health, and diagnostic tools
+- `opx provider` / `opx debug` — provider health and diagnostic tools
 - `opx-session` — full session API surface (list, get, create, prompt, transcript, revert, permissions, and more)
 - `opencode-transcript` — standalone transcript renderer for live sessions or saved transcript JSON
 - `findFreePort`-based server setup for safe parallel test runs
@@ -19,11 +20,17 @@ This Bun-based package automates OpenCode sessions via GitHub and `npx`.
 
 This package provides session management and automation through the former harness utilities:
 
-- `opx` manages run, resume, provider, and debug flows.
-- `opx-session` provides broader session control.
-- `opx-session transcript <session-id>` renders a turn/step markdown transcript
-  from the configured OpenCode server without relying on an external package.
-- `opx-session transcript <session-id> --json` emits the compact structured
+- `opx` is the primary workflow surface.
+- `opx` exposes direct session lifecycle commands so routine automation stays on
+  the opinionated path.
+- `opx session` is an internal subcommand surface and is intentionally omitted
+  from the primary workflow narrative.
+- `opx-session` provides the broader raw session API for debugging and
+  implementation work.
+- `opx transcript --session <session-id>` and `opx-session transcript <session-id>`
+  render a turn/step markdown transcript from the configured OpenCode server.
+- `opx transcript --session <session-id> --json` and
+  `opx-session transcript <session-id> --json` emit the compact structured
   transcript document used by downstream prompt-based summarizers.
 - `opencode-transcript` remains available as a compatibility entrypoint for
   transcript-only workflows, including `--input /path/to/transcript.json`.
@@ -42,6 +49,10 @@ npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git openc
 
 ### `opx` — automation harness
 
+Primary surface for normal workflow automation. Progressive disclosure applies:
+start with `opx`, then drop to `opx provider` / `opx debug` only when needed.
+`opx session` is internal.
+
 #### `opx run`
 
 Create a session, send a prompt, wait for idle, print transcript, then delete the session.
@@ -57,6 +68,69 @@ Create a session, send a prompt, wait for idle, print transcript, then delete th
 
 Exit codes: `0` = success, `1` = failure/timeout, `2` = provider rate-limited.
 
+#### `opx start`
+
+Create a workflow session and print its session ID.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--title <text>` | No | `opx:<timestamp>` | Optional session title |
+| `--json` | No | false | Emit `{ sessionID, directory, workspaceID }` |
+
+#### `opx prompt`
+
+Inject a prompt into an existing workflow session. Success means the prompt was
+recorded as a new user message; the command fails instead of silently succeeding.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--session <id>` | Yes | — | Session ID to update |
+| `--prompt <text>` | Yes | — | Prompt text to inject |
+| `--agent <name>` | No | inherit/default | Explicit agent override |
+| `--model <provider/model>` | No | inherit/default | Explicit model override |
+| `--wait` | No | false | Wait for idle and print transcript |
+| `--linger <sec>` | No | `0` | Extra idle wait when `--wait` is used |
+| `--timeout <sec>` | No | `180` | Hard wall-clock timeout when `--wait` is used |
+| `--json` | No | false | Emit `{ sessionID, directory, workspaceID }` when not waiting |
+
+#### `opx wait`
+
+Wait for the next idle boundary on a session.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--session <id>` | Yes | — | Session ID to observe |
+| `--linger <sec>` | No | `0` | Extra idle wait after the first idle boundary |
+| `--timeout <sec>` | No | `180` | Hard wall-clock timeout |
+| `--json` | No | false | Emit `{ sessionID, exitCode, errorKind, timedOut }` |
+
+#### `opx messages`
+
+Dump all session messages as JSON.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--session <id>` | Yes | — | Session ID to inspect |
+
+#### `opx transcript`
+
+Render a transcript from the live session surface.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--session <id>` | Yes | — | Session ID to render |
+| `--json` | No | false | Emit compact structured JSON instead of markdown |
+| `--output <path>` | No | — | Save transcript to a file |
+| `--tee-temp` | No | false | Stream transcript and save a temp copy |
+
+#### `opx delete`
+
+Delete a workflow session.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--session <id>` | Yes | — | Session ID to delete |
+
 #### `opx resume`
 
 Send a follow-up prompt to an existing session and wait for idle.
@@ -70,13 +144,6 @@ Send a follow-up prompt to an existing session and wait for idle.
 | `--linger <sec>` | No | `0` | Extra idle wait |
 | `--keep` | No | false | Do not delete session |
 | `--timeout <sec>` | No | `180` | Hard wall-clock timeout |
-
-#### `opx session`
-
-| Subcommand | Required args | Description |
-|------------|---------------|-------------|
-| `session delete` | `--session <id>` | Delete a session |
-| `session messages` | `--session <id>` | Dump all messages as JSON |
 
 #### `opx provider`
 
@@ -101,6 +168,9 @@ Send a follow-up prompt to an existing session and wait for idle.
 ---
 
 ### `opx-session` — full session API
+
+Advanced/raw surface. Use this when you are debugging server behavior or need a
+specific low-level endpoint that the workflow CLI intentionally hides.
 
 | Command | Required args | Optional flags | Description |
 |---------|---------------|----------------|-------------|
