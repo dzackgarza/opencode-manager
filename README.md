@@ -81,7 +81,7 @@ Behavior:
 - `system` injects an agent-only prompt
 - prompts advance by default
 - `--no-reply` queues without allowing continuation
-- `wait` blocks until idle
+- `wait` blocks until idle and returns the latest assistant reply when one is available
 - `transcript` is the canonical inspection surface
 - `final` returns the last assistant message by default and deletes the session
 - `delete` deletes a prolonged session explicitly

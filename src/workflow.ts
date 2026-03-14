@@ -32,6 +32,13 @@ type RenderWorkflowOutputInput = {
   transcriptRequested: boolean;
 };
 
+export function latestAssistantMessage(
+  assistantMessages: string[],
+): string | null {
+  const lastAssistant = assistantMessages.at(-1)?.trim();
+  return lastAssistant ? lastAssistant : null;
+}
+
 export function formatModelRef(model: ModelRef): string {
   return `${model.providerID}/${model.modelID}`;
 }
@@ -106,7 +113,7 @@ export function renderWorkflowOutput(
     return input.transcript;
   }
 
-  const lastAssistant = input.assistantMessages.at(-1)?.trim();
+  const lastAssistant = latestAssistantMessage(input.assistantMessages);
   if (!lastAssistant) {
     throw new Error("No assistant reply was recorded for the completed command.");
   }

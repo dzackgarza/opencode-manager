@@ -10,6 +10,7 @@ import {
   buildPromptBody,
   extractObservedIdentity,
   formatModelRef,
+  latestAssistantMessage,
   parseModelRef,
   renderWorkflowOutput,
   type ModelRef,
@@ -2123,10 +2124,24 @@ async function enqueueContinuedPrompt(options: {
 }
 
 async function waitCommand(options: { json?: boolean; session: string }): Promise<void> {
-  const { client } = await makeSessionClient(options.session);
-  const result = await waitForIdle(client, options.session, 0, 180, null);
+  const { client, context } = await makeSessionClient(options.session);
+  const result = await waitForIdle(client, options.session, 0, 180, context);
+  const messages = await loadSessionMessages(client, options.session, context);
+  const assistantMessage = latestAssistantMessage(assistantTexts(messages));
   if (options.json) {
-    console.log(JSON.stringify({ sessionID: options.session, ...result }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          sessionID: options.session,
+          assistantMessage,
+          ...result,
+        },
+        null,
+        2,
+      ),
+    );
+  } else if (assistantMessage) {
+    process.stdout.write(`${assistantMessage}\n`);
   } else {
     console.log(`Session ${options.session} is idle.`);
   }
@@ -2231,9 +2246,11 @@ function buildProgram(): Command {
 
   program
     .command("wait")
-    .description("Wait until a begun session reaches idle.")
+    .description(
+      "Wait until a begun session reaches idle and return the latest assistant reply when one is available.",
+    )
     .requiredOption("--session <id>", "Workflow session ID")
-    .option("--json", "Emit structured idle status")
+    .option("--json", "Emit structured idle status plus the latest assistant reply")
     .action(waitCommand);
 
   program

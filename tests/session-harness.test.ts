@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   buildPromptBody,
   extractObservedIdentity,
+  latestAssistantMessage,
   renderWorkflowOutput,
 } from "../src/workflow";
 
@@ -105,6 +106,9 @@ describe("workflow helpers", () => {
 
   it("returns the last assistant message by default and the transcript when requested", () => {
     const transcript = "# OpenCode Session Transcript\n\nhello";
+
+    expect(latestAssistantMessage(["first", "final answer"])).toBe("final answer");
+    expect(latestAssistantMessage(["   ", ""])).toBeNull();
 
     expect(
       renderWorkflowOutput({
