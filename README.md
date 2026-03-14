@@ -12,7 +12,7 @@ This Bun-based package automates OpenCode sessions via GitHub and `npx`.
 - `opx resume` — send follow-up prompts to existing sessions
 - `opx session` / `opx provider` / `opx debug` — session management, provider health, and diagnostic tools
 - `opx-session` — full session API surface (list, get, create, prompt, transcript, revert, permissions, and more)
-- `opencode-transcript` — standalone transcript renderer for session IDs or saved export files
+- `opencode-transcript` — standalone transcript renderer for live sessions or saved transcript JSON
 - `findFreePort`-based server setup for safe parallel test runs
 
 ## Scope
@@ -26,7 +26,7 @@ This package provides session management and automation through the former harne
 - `opx-session transcript <session-id> --json` emits the compact structured
   transcript document used by downstream prompt-based summarizers.
 - `opencode-transcript` remains available as a compatibility entrypoint for
-  transcript-only workflows, including `--input /path/to/export.json`.
+  transcript-only workflows, including `--input /path/to/transcript.json`.
 
 ## Run
 
@@ -136,9 +136,8 @@ Standalone entrypoint for rendering transcripts from saved export files or live 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `<session-id>` | One of session ID or `--input` | Session ID to render via the server API |
-| `--input <path>` | One of session ID or `--input` | Render a saved `opencode export` JSON file |
+| `--input <path>` | One of session ID or `--input` | Render a saved transcript JSON file |
 | `--json` | No | Emit compact structured JSON instead of markdown |
-| `--opencode-bin <bin>` | No | Use `opencode export` compatibility mode instead of the server API |
 | `--output <path>` | No | Save transcript to a file (mutually exclusive with `--tee-temp`) |
 | `--tee-temp` | No | Stream transcript and save a copy to a temp file |
 
@@ -156,10 +155,10 @@ npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
   opx-session transcript ses_abc123 --tee-temp
 
 npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
-  opx-session transcript --input /tmp/session-export.json
+  opx-session transcript --input /tmp/session.json
 
 npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \
-  opencode-transcript --input /tmp/session-export.json
+  opencode-transcript --input /tmp/session.json
 ```
 
 ## Environment Variables
@@ -177,7 +176,7 @@ shared default instance.
 
 ```bash
 direnv exec /path/to/plugin \
-  opencode serve --hostname 127.0.0.1 --port 4198
+  command opencode serve --hostname 127.0.0.1 --port 4198
 
 OPENCODE_BASE_URL=http://127.0.0.1:4198 \
   npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git \

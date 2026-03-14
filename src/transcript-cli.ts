@@ -3,11 +3,6 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
 import {
-  renderTranscriptJson,
-  renderTranscriptMarkdown,
-  type TranscriptExport,
-} from "./transcript";
-import {
   renderInputTranscript,
   renderSessionTranscript,
 } from "./session-harness";
@@ -15,7 +10,6 @@ import {
 type TranscriptCliArgs = {
   input?: string;
   json: boolean;
-  opencodeBin?: string;
   output?: string;
   sessionID?: string;
   teeTemp: boolean;
@@ -27,17 +21,11 @@ OpenCode transcript renderer
 
 Usage:
   opencode-transcript <session-id> [--json] [--output PATH | --tee-temp]
-  opencode-transcript --input <export.json> [--json] [--output PATH | --tee-temp]
-  opencode-transcript <session-id> --opencode-bin /path/to/opencode [--json] [--output PATH | --tee-temp]
-
-Behavior:
-  By default, session IDs are rendered through the configured OpenCode server.
-  Use --opencode-bin to force \`opencode export\` compatibility mode instead.
+  opencode-transcript --input <transcript.json> [--json] [--output PATH | --tee-temp]
 
 Options:
-  --input PATH        Render a saved \`opencode export\` JSON file
+  --input PATH        Render a saved transcript JSON file
   --json              Emit compact structured JSON instead of markdown
-  --opencode-bin BIN  Export with BIN instead of using the server API
   --output PATH       Save transcript to a file instead of streaming
   --tee-temp          Stream transcript and also save it to a temp file
   --help              Show this help
@@ -63,10 +51,6 @@ function parseArgs(argv: string[]): TranscriptCliArgs {
       case "--json":
         parsed.json = true;
         break;
-      case "--opencode-bin":
-        parsed.opencodeBin = argv[index + 1];
-        index += 1;
-        break;
       case "--output":
         parsed.output = argv[index + 1];
         index += 1;
@@ -91,29 +75,6 @@ function parseArgs(argv: string[]): TranscriptCliArgs {
   return parsed;
 }
 
-async function loadTranscriptExportFromOpencode(
-  sessionID: string,
-  opencodeBin: string,
-): Promise<TranscriptExport> {
-  const proc = Bun.spawn([opencodeBin, "export", sessionID], {
-    stderr: "pipe",
-    stdout: "pipe",
-  });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-
-  if (exitCode !== 0) {
-    throw new Error(
-      stderr.trim() || `${opencodeBin} export ${sessionID} exited with ${exitCode}`,
-    );
-  }
-
-  return JSON.parse(stdout) as TranscriptExport;
-}
-
 function teeLabel(args: TranscriptCliArgs): string {
   if (args.sessionID) {
     return args.sessionID;
@@ -131,17 +92,6 @@ async function renderTranscript(args: TranscriptCliArgs, savedCopyPath?: string)
 
   if (!args.sessionID) {
     throw new Error("A session ID or --input <path> is required.");
-  }
-
-  if (args.opencodeBin) {
-    const exported = await loadTranscriptExportFromOpencode(
-      args.sessionID,
-      args.opencodeBin,
-    );
-    if (args.json) {
-      return JSON.stringify(renderTranscriptJson(exported), null, 2);
-    }
-    return renderTranscriptMarkdown(exported, { savedCopyPath });
   }
 
   return renderSessionTranscript(args.sessionID, {
