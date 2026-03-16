@@ -466,20 +466,94 @@ async function sendPrompt(
     return { queued: true, noReply: true };
   }
 
-  const data = await sessionRequest<{ info: Message; parts: Part[] }>(
-    sessionID,
-    `/session/${sessionID}/message`,
+  const session = await getSession(sessionID);
+  const response = await fetch(
+    `${API_BASE}/session/${encodeURIComponent(sessionID)}/message`,
     {
       method: "POST",
+      headers: withSessionContextHeaders(
+        { "Accept": "text/event-stream", "Content-Type": "application/json" },
+        session
+      ),
       body: JSON.stringify(buildPromptRequestBody(message, options)),
-    },
+    }
   );
 
-  if (!data) {
-    throw new Error("Failed to send prompt");
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "Unknown error");
+    throw new Error(`API error (${response.status}): ${errorText}`);
   }
 
-  return data;
+  let finalMessage: { info: Message; parts: Part[] } | null = null;
+  let buffer = "";
+
+  const reader = response.body?.getReader();
+  if (reader) {
+    const decoder = new TextDecoder();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const dataStr = line.slice(6).trim();
+          if (!dataStr || dataStr === "[DONE]") continue;
+          try {
+            const evt = JSON.parse(dataStr);
+            if (evt.type === "message.updated" && evt.properties?.info?.role === "assistant") {
+              finalMessage = evt.properties;
+            }
+          } catch (e) {
+            // ignore JSON parse errors for incomplete chunks
+          }
+        }
+      }
+    }
+  } else {
+    // Fallback if response.body is not a ReadableStream (e.g. node-fetch in some environments)
+    const text = await response.text();
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        const dataStr = line.slice(6).trim();
+        if (!dataStr || dataStr === "[DONE]") continue;
+        try {
+          const evt = JSON.parse(dataStr);
+          if (evt.type === "message.updated" && evt.properties?.info?.role === "assistant") {
+            finalMessage = evt.properties;
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  // Parse remaining buffer just in case
+  if (buffer.trim().startsWith("data: ")) {
+    try {
+      const dataStr = buffer.trim().slice(6).trim();
+      if (dataStr && dataStr !== "[DONE]") {
+        const evt = JSON.parse(dataStr);
+        if (evt.type === "message.updated" && evt.properties?.info?.role === "assistant") {
+          finalMessage = evt.properties;
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (!finalMessage) {
+    const messages = await getMessages(sessionID);
+    const last = messages[messages.length - 1];
+    if (last && last.info.role === "assistant") {
+      return last;
+    }
+    throw new Error("Failed to receive assistant response from stream");
+  }
+
+  return finalMessage;
 }
 
 // session.command({ path: { id }, body })
