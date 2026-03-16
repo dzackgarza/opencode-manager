@@ -487,7 +487,10 @@ async function sendPrompt(
   let finalMessage: { info: Message; parts: Part[] } | null = null;
   let buffer = "";
 
-  const reader = response.body?.getReader();
+  const reader =
+    response.body != null && typeof (response.body as { getReader?: unknown }).getReader === "function"
+      ? (response.body as ReadableStream<Uint8Array>).getReader()
+      : null;
   if (reader) {
     const decoder = new TextDecoder();
     while (true) {
