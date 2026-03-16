@@ -502,12 +502,16 @@ async function sendPrompt(
       buffer = lines.pop() || "";
       
       for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const dataStr = line.slice(6).trim();
+        if (line.startsWith("data:")) {
+          const dataStr = line.slice(line.startsWith("data: ") ? 6 : 5).trim();
           if (!dataStr || dataStr === "[DONE]") continue;
           try {
             const evt = JSON.parse(dataStr);
-            if (evt.type === "message.updated" && evt.properties?.info?.role === "assistant") {
+            if (
+              evt.type === "message.updated" &&
+              evt.properties?.info?.role === "assistant" &&
+              evt.properties?.info?.finish !== "tool-calls"
+            ) {
               finalMessage = evt.properties;
             }
           } catch (e) {
@@ -521,12 +525,16 @@ async function sendPrompt(
     const text = await response.text();
     const lines = text.split(/\r?\n/);
     for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        const dataStr = line.slice(6).trim();
+      if (line.startsWith("data:")) {
+        const dataStr = line.slice(line.startsWith("data: ") ? 6 : 5).trim();
         if (!dataStr || dataStr === "[DONE]") continue;
         try {
           const evt = JSON.parse(dataStr);
-          if (evt.type === "message.updated" && evt.properties?.info?.role === "assistant") {
+          if (
+            evt.type === "message.updated" &&
+            evt.properties?.info?.role === "assistant" &&
+            evt.properties?.info?.finish !== "tool-calls"
+          ) {
             finalMessage = evt.properties;
           }
         } catch (e) {}
@@ -535,12 +543,17 @@ async function sendPrompt(
   }
 
   // Parse remaining buffer just in case
-  if (buffer.trim().startsWith("data: ")) {
+  if (buffer.trim().startsWith("data:")) {
     try {
-      const dataStr = buffer.trim().slice(6).trim();
+      const trimmed = buffer.trim();
+      const dataStr = trimmed.slice(trimmed.startsWith("data: ") ? 6 : 5).trim();
       if (dataStr && dataStr !== "[DONE]") {
         const evt = JSON.parse(dataStr);
-        if (evt.type === "message.updated" && evt.properties?.info?.role === "assistant") {
+        if (
+          evt.type === "message.updated" &&
+          evt.properties?.info?.role === "assistant" &&
+          evt.properties?.info?.finish !== "tool-calls"
+        ) {
           finalMessage = evt.properties;
         }
       }
