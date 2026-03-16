@@ -1382,12 +1382,19 @@ async function main(): Promise<void> {
   const options: Record<string, string | boolean | number> = {};
   const positional: string[] = [];
   
+  const booleanFlags = new Set(["json", "no-reply", "tee-temp"]);
+
   // Parse arguments
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
+      if (booleanFlags.has(key)) {
+        options[key] = true;
+        continue;
+      }
+
       const nextArg = args[i + 1];
       
       if (nextArg && !nextArg.startsWith("--")) {
