@@ -1382,7 +1382,7 @@ async function main(): Promise<void> {
   const options: Record<string, string | boolean | number> = {};
   const positional: string[] = [];
   
-  const booleanFlags = new Set(["json", "no-reply", "tee-temp"]);
+  const booleanFlags = new Set(["json", "no-reply", "noReply", "tee-temp", "teeTemp"]);
 
   // Parse arguments
   for (let i = 1; i < args.length; i++) {
