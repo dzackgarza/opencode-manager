@@ -1,47 +1,35 @@
+set fallback := true
+
+default:
+    @just --list
+
 install:
-    bun install
+    uv sync --all-groups
 
-# Setup npm trusted publisher (one-time manual setup)
-setup-npm-trust:
-    npm trust github --repository dzackgarza/opencode-manager --file publish.yml
+format:
+    uv run ruff format .
 
-typecheck:
-    bunx tsc --noEmit -p tsconfig.json
+[private]
+_lint:
+    uv run ruff check .
 
-test:
+[private]
+_typecheck:
+    uv run basedpyright
+
+lint: _lint
+
+typecheck: _typecheck
+
+test *ARGS: _lint _typecheck
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/opencode"
-    exec bun test
-
-check: typecheck test
-
-# Manual publish from local (requires 2FA)
-publish: check
-    npm publish
-
-
-# Bump patch version, commit, and tag
-bump-patch:
-    npm version patch --no-git-tag-version
-    git add package.json
-    git commit -m "chore: bump version to v$(node -p 'require("./package.json").version')"
-    git tag "v$(node -p 'require("./package.json").version')"
-
-# Bump minor version, commit, and tag
-bump-minor:
-    npm version minor --no-git-tag-version
-    git add package.json
-    git commit -m "chore: bump version to v$(node -p 'require("./package.json").version')"
-    git tag "v$(node -p 'require("./package.json").version')"
-
-# Bump major version, commit, and tag
-bump-major:
-    npm version major --no-git-tag-version
-    git add package.json
-    git commit -m "chore: bump version to v$(node -p 'require("./package.json").version')"
-    git tag "v$(node -p 'require("./package.json").version')"
-
-# Push commits and tags to trigger CI release
-release: check
-    git push && git push --tags
+    repo="{{justfile_directory()}}"
+    root="$(cd "$repo/../.." && pwd)"
+    TEST_SANDBOX_CONFIG_JSON="$repo/test-support/opencode/opencode.json" \
+    TEST_SANDBOX_CONFIG_PACKAGE_JSON="$repo/test-support/opencode/package.json" \
+    TEST_SANDBOX_CONFIG_GITIGNORE="$repo/test-support/opencode/.gitignore" \
+    just --justfile "$root/justfile" test-sandbox-up
+    trap 'just --justfile "$root/justfile" test-sandbox-down' EXIT
+    source "$root/.test-sandbox-env.sh"
+    uv run pytest {{ARGS}}
