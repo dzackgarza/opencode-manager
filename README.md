@@ -1,164 +1,91 @@
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I2I57UKJ8)
-
 # opencode-manager
 
-`opencode-manager` is an opinionated workflow CLI for OpenCode sessions.
+`opencode-manager` is a proof-first Python CLI for OpenCode session orchestration.
 
-It intentionally exposes a small workflow surface instead of mirroring the raw
-session API. If you need direct endpoint control, use the OpenCode API or SDK
-directly.
+The main command is `ocm`.
+
+The active CLI contract is summarized in [proof-contract.md](/home/dzack/opencode-plugins/clis/opencode-manager/docs/proof-contract.md).
+
+## Why This Exists
+
+OpenCode already has primitives for creating sessions, continuing sessions, queueing prompts, and exporting transcripts. What it does not provide by itself is a narrow, proof-oriented operator CLI that makes continued-session orchestration explicit and testable.
+
+`opencode-manager` exists to solve that exact gap:
+
+- turn session continuation into a small, documented CLI surface instead of ad hoc HTTP calls
+- preserve the real continued-session contract: default prompts resume the agent, while `--no-reply` is the explicit queue-only edge case
+- make queued system prompts observable in transcript/session state and prove their later effect on the next real turn
+- give plugin and workflow authors a canonical way to prove behavior against an isolated OpenCode instance instead of helper-heavy simulations
+
+In short: this tool is for managing real OpenCode sessions in a way that can be proven from live state, not guessed from mocked transcripts or inferred from optimistic success messages.
+
+It is intentionally narrow:
+
+- prove real session continuation against the canonical isolated OpenCode server
+- derive continued-turn identity from live session history
+- carry queued system prompts into the next real continued turn
 
 ## Install
 
 ```bash
-npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git opx --help
-npx --yes --package=git+https://github.com/dzackgarza/opencode-manager.git opencode-transcript --help
+uv sync --all-groups
 ```
-
-## Environment
-
-`opx` and `opencode-transcript` use the normal OpenCode server environment:
-
-- `OPENCODE_BASE_URL`: OpenCode server base URL. Defaults to `http://127.0.0.1:4096`.
-- `OPENCODE_API_KEY`: Optional bearer token for direct API access.
-- `OPENCODE_SERVER_USERNAME`: Optional basic-auth username when talking to a protected server.
-- `OPENCODE_SERVER_PASSWORD`: Optional basic-auth password when talking to a protected server.
-
-For repo-local verification, prefer a repo-local server:
-
-```bash
-direnv allow
-direnv exec . zsh -lc 'command opencode serve --hostname 127.0.0.1 --port 4198'
-```
-
-Then point `opx` at that server:
-
-```bash
-OPENCODE_BASE_URL=http://127.0.0.1:4198 bun run src/cli.ts --help
-```
-
-## Workflow Model
-
-There are two public workflows.
-
-### One-shot
-
-Use `one-shot` when the session should be created, answered, and deleted in one
-command.
-
-```bash
-opx one-shot --prompt "Reply with ONLY OK."
-opx one-shot --agent Minimal --model github-copilot/claude-sonnet-4.6 --prompt "Reply with ONLY OK."
-opx one-shot --prompt "Summarize the repo." --transcript
-```
-
-Behavior:
-
-- creates a session
-- injects a visible prompt
-- waits until the session is idle
-- returns the last assistant message by default
-- deletes the session
-
-### Prolonged Session
-
-Use `begin-session` plus follow-up commands when the session must stay alive
-across turns.
-
-```bash
-opx begin-session "Inspect the README." --agent Minimal --model github-copilot/gpt-5-mini
-opx chat --session ses_123 --prompt "Now inspect the justfile."
-opx system --session ses_123 --prompt "Stay terse." --no-reply
-opx wait --session ses_123
-opx transcript --session ses_123
-opx final --session ses_123 --prompt "Reply with ONLY DONE."
-```
-
-Behavior:
-
-- `begin-session` creates the session and injects the initial user-visible prompt
-- `chat` injects later user-visible prompts
-- `system` injects an agent-only prompt
-- prompts advance by default
-- `--no-reply` queues without allowing continuation
-- `wait` blocks until idle and returns the latest assistant reply when one is available
-- `transcript` is the canonical inspection surface
-- `final` returns the last assistant message by default and deletes the session
-- `delete` deletes a prolonged session explicitly
-
-## Responder Identity
-
-Responder identity is the pair:
-
-- `--agent <name>`
-- `--model provider/model`
-
-For prolonged sessions this identity is fixed by the first prompt, whether it
-was explicit or came from OpenCode defaults. Continued-session commands derive
-that identity from the live session transcript and do not accept per-turn
-overrides.
 
 ## Commands
 
-### Workflow
+Prompt-bearing commands take positional arguments.
 
 ```bash
-opx one-shot --prompt <text> [--agent <name>] [--model provider/model] [--transcript]
-opx begin-session <prompt> [--agent <name>] [--model provider/model] [--json]
-opx chat --session <id> --prompt <text> [--no-reply]
-opx system --session <id> --prompt <text> [--no-reply]
-opx wait --session <id> [--json]
-opx transcript --session <id> [--json] [--output PATH | --tee-temp]
-opx final --session <id> --prompt <text> [--transcript]
-opx delete --session <id>
-```
-
-### Advanced
-
-```bash
-opx advanced provider-list
-opx advanced provider-health --provider github-copilot
-```
-
-### Debug
-
-```bash
-opx debug --help
-opx debug trace --session ses_123
-opx debug probe-limit --model github-copilot/claude-sonnet-4.6
-```
-
-## Transcript Renderer
-
-`opencode-transcript` remains the standalone transcript renderer for live
-sessions or saved transcript exports.
-
-```bash
+ocm one-shot "Reply with ONLY OK."
+ocm begin-session "Reply with ONLY READY." --agent opencode-manager-proof
+ocm chat ses_123 "Reply with ONLY SECOND_OK."
+ocm chat ses_123 "Stay terse." --system
+ocm doctor --json
+ocm wait ses_123 --json
+ocm transcript ses_123 --json
+ocm final ses_123 "Reply with ONLY DONE."
+ocm delete ses_123
 opencode-transcript ses_123
-opencode-transcript ses_123 --json
-opencode-transcript --input ./transcript.json
+opencode-transcript --input tests/fixtures/transcript-multiturn.json
 ```
 
-## Validation
+## Workflow Contract
 
-Use the repo `justfile` for all verification:
+- Public command inputs are validated through strict Pydantic models before orchestration work begins.
+- Default continued-session behavior resumes the agent turn.
+- `chat --no-reply` is the explicit queue-only edge case.
+- `chat --system` records an agent-only system prompt in the transcript; it is carried in session state but is not shown to the user as a visible prompt line.
+- A recorded user message without a new assistant turn is not considered success for default continuation.
+- Continued turns re-send the observed agent/model identity from the live session transcript.
+- `chat --system --no-reply` records an idle queued system message, and the next continued turn carries that queued system prompt into the live `/message` request.
+- `doctor` verifies config resolution, centralized sandbox wiring, and optional server reachability.
+
+## Test Runtime
+
+Live proofs are managed by the centralized workspace sandbox, not by package-local server scripts.
 
 ```bash
-just install
+just test
+just --justfile ../../justfile test-sandbox-up
+source ../../.test-sandbox-env.sh
+uv run pytest
+just --justfile ../../justfile test-sandbox-down
+```
+
+`just test` will:
+
+1. ask the top-level workspace justfile to create a fresh sandbox home/project dir and start a dedicated `opencode serve` instance on `http://127.0.0.1:4097`
+2. copy this package's test config into that sandbox before server startup
+3. source the centralized sandbox env file
+4. run the pytest suite
+5. tear the sandbox down
+
+## Testing Surface
+
+- Live orchestration proofs run through `just test` against the centralized sandbox.
+
+## Verification
+
+```bash
 just check
 ```
-
-## Breaking Changes
-
-The redesign removes the old raw-session product surface:
-
-- `opx-session` is no longer a public binary
-- `opx run` became `opx one-shot`
-- `opx start` became `opx begin-session`
-- `opx prompt` split into `opx chat` and `opx system`
-- `opx resume`, `opx messages`, and `opx session ...` are removed from the public surface
-- per-turn `--agent` and `--model` overrides are removed from continued-session commands
-- `--keep` is removed
-
-See [CHANGELOG.md](/home/dzack/opencode-plugins/opencode-manager/CHANGELOG.md) for
-the release record.

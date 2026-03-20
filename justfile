@@ -1,48 +1,31 @@
 set fallback := true
-install:
-    bun install
 
-# Setup npm trusted publisher (one-time manual setup)
-setup-npm-trust:
-    npm trust github --repository dzackgarza/opencode-manager --file publish.yml
+default:
+    @just --list
+
+install:
+    uv sync --all-groups
+
+format:
+    uv run ruff format .
+
+lint:
+    uv run ruff check .
 
 typecheck:
-    bunx tsc --noEmit -p tsconfig.json
+    uv run basedpyright
 
-test:
+test *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/opencode"
-    exec bun test
+    repo="{{justfile_directory()}}"
+    root="$(cd "$repo/../.." && pwd)"
+    TEST_SANDBOX_CONFIG_JSON="$repo/test-support/opencode/opencode.json" \
+    TEST_SANDBOX_CONFIG_PACKAGE_JSON="$repo/test-support/opencode/package.json" \
+    TEST_SANDBOX_CONFIG_GITIGNORE="$repo/test-support/opencode/.gitignore" \
+    just --justfile "$root/justfile" test-sandbox-up
+    trap 'just --justfile "$root/justfile" test-sandbox-down' EXIT
+    source "$root/.test-sandbox-env.sh"
+    uv run pytest {{ARGS}}
 
-check: typecheck test
-
-# Manual publish from local (requires 2FA)
-publish: check
-    npm publish
-
-
-# Bump patch version, commit, and tag
-bump-patch:
-    npm version patch --no-git-tag-version
-    git add package.json
-    git commit -m "chore: bump version to v$(node -p 'require("./package.json").version')"
-    git tag "v$(node -p 'require("./package.json").version')"
-
-# Bump minor version, commit, and tag
-bump-minor:
-    npm version minor --no-git-tag-version
-    git add package.json
-    git commit -m "chore: bump version to v$(node -p 'require("./package.json").version')"
-    git tag "v$(node -p 'require("./package.json").version')"
-
-# Bump major version, commit, and tag
-bump-major:
-    npm version major --no-git-tag-version
-    git add package.json
-    git commit -m "chore: bump version to v$(node -p 'require("./package.json").version')"
-    git tag "v$(node -p 'require("./package.json").version')"
-
-# Push commits and tags to trigger CI release
-release: check
-    git push && git push --tags
+check: lint typecheck test
