@@ -9,13 +9,19 @@ install:
 format:
     uv run ruff format .
 
-lint:
+[private]
+_lint:
     uv run ruff check .
 
-typecheck:
+[private]
+_typecheck:
     uv run basedpyright
 
-test *ARGS:
+lint: _lint
+
+typecheck: _typecheck
+
+test *ARGS: _lint _typecheck
     #!/usr/bin/env bash
     set -euo pipefail
     repo="{{justfile_directory()}}"
@@ -27,5 +33,3 @@ test *ARGS:
     trap 'just --justfile "$root/justfile" test-sandbox-down' EXIT
     source "$root/.test-sandbox-env.sh"
     uv run pytest {{ARGS}}
-
-check: lint typecheck test
