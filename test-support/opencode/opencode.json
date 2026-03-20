@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/gpt-5-nano",
+  "agent": {
+    "opencode-manager-proof": {
+      "description": "Primary agent for opencode-manager continuation proofs",
+      "mode": "primary",
+      "model": "opencode/gpt-5-nano",
+      "prompt": "You are a strict orchestration-proof agent. Follow instructions exactly. Never use tools unless the prompt explicitly requires them. If asked for exact text, output only that text with no extra words.",
+      "permission": {
+        "bash": "deny",
+        "read": "deny",
+        "write": "deny",
+        "glob": "deny",
+        "grep": "deny",
+        "list": "deny",
+        "question": "deny",
+        "task": "deny",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "todoread": "deny",
+        "todowrite": "deny",
+        "skill": "deny"
+      }
+    }
+  },
+  "plugin": []
+}
