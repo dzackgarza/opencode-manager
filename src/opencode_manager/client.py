@@ -18,7 +18,7 @@ from .errors import PromptDeliveryError, SessionLookupError, WaitTimeoutError
 
 LOG = logging.getLogger(__name__)
 
-type JsonDict = dict[str, object]
+JsonDict = dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +160,13 @@ def observed_identity(messages: list[JsonDict]) -> tuple[str | None, str | None]
     return None, None
 
 
+def _merge_system_prompts(existing: list[str], prompt_system: str | None) -> str | None:
+    merged = [*existing]
+    if isinstance(prompt_system, str) and prompt_system.strip():
+        merged.append(prompt_system.strip())
+    return "\n\n".join(merged) if merged else None
+
+
 class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     """Mixed SDK + raw HTTP client for the workflow CLI."""
 
@@ -271,76 +278,30 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         context = context or self.session_context(session_id)
         initial_messages = self.list_messages(session_id, context=context)
         initial_assistant_count = len(assistant_texts(initial_messages))
-        derived_agent, derived_model = observed_identity(initial_messages)
-        queued_systems = pending_system_prompts(initial_messages)
-        payload = self._prompt_payload(
+        payload = self._payload_for_submission(
             prompt=prompt,
             visibility=visibility,
-            agent=agent or derived_agent,
-            model=model or derived_model,
+            messages=initial_messages,
+            agent=agent,
+            model=model,
         )
 
         if no_reply:
-            LOG.info("queue-only prompt %s visibility=%s", session_id, visibility)
-            payload["noReply"] = True
-            response = self._http.post(
-                f"/session/{session_id}/prompt_async",
-                headers=session_headers(context, content_type="application/json"),
-                json=payload,
-            )
-            response.raise_for_status()
-            self._wait_for_prompt_recording(
+            return self._queue_prompt(
                 session_id,
-                context=context,
-                initial_count=len(initial_messages),
                 prompt=prompt,
                 visibility=visibility,
+                context=context,
+                initial_messages=initial_messages,
+                payload=payload,
             )
-            return PromptResult(assistant_message=None, session_id=session_id)
-
-        if visibility == "chat" and queued_systems:
-            payload["system"] = "\n\n".join(queued_systems)
-            LOG.info(
-                "continued prompt %s visibility=%s carrying %d queued system prompt(s)",
-                session_id,
-                visibility,
-                len(queued_systems),
-            )
-        elif visibility == "system" and queued_systems:
-            current_system = payload.get("system")
-            merged_systems = [*queued_systems]
-            if isinstance(current_system, str) and current_system.strip():
-                merged_systems.append(current_system.strip())
-            payload["system"] = "\n\n".join(merged_systems)
-            LOG.info(
-                "continued prompt %s visibility=%s merging %d queued system prompt(s)",
-                session_id,
-                visibility,
-                len(queued_systems),
-            )
-
-        LOG.info("continued prompt %s visibility=%s", session_id, visibility)
-        with self._http.stream(
-            "POST",
-            f"/session/{session_id}/message",
-            headers=session_headers(
-                context,
-                accept="text/event-stream",
-                content_type="application/json",
-            ),
-            json=payload,
-        ) as response:
-            response.raise_for_status()
-            self._consume_stream(response.iter_lines())
-
-        messages = self.list_messages(session_id, context=context)
-        assistant_message = latest_assistant_text_since(messages, initial_assistant_count)
-        if assistant_message is None:
-            raise PromptDeliveryError(
-                f"Session {session_id} accepted a continued {visibility} prompt "
-                "but never produced a new assistant turn."
-            )
-        return PromptResult(assistant_message=assistant_message, session_id=session_id)
+        return self._continue_prompt(
+            session_id,
+            visibility=visibility,
+            context=context,
+            payload=payload,
+            initial_assistant_count=initial_assistant_count,
+        )
 
     def wait_until_idle(
         self,
@@ -360,36 +321,23 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         latest_updated_at: int | float | None = None
 
         while time.monotonic() < deadline:
-            session = self.get_session(session_id)
-            latest_updated_at = self._session_updated_at(session)
-            messages = self.list_messages(session_id, context=context)
-            signature = self._idle_signature(latest_updated_at, messages)
+            latest_updated_at, messages, signature = self._wait_snapshot(
+                session_id, context=context
+            )
             if signature != previous_signature:
                 previous_signature = signature
                 stable_since = time.monotonic()
-            assistant_message = (
-                latest_assistant_text_since(messages, initial_assistant_count)
-                if require_new_assistant
-                else latest_assistant_text(messages)
+            result = self._idle_wait_result(
+                session_id=session_id,
+                messages=messages,
+                updated_at=latest_updated_at,
+                require_new_assistant=require_new_assistant,
+                initial_assistant_count=initial_assistant_count,
+                stable_since=stable_since,
+                quiet_period_sec=quiet_period_sec,
             )
-            if not require_new_assistant and not has_pending_prompt(messages):
-                return WaitResult(
-                    assistant_message=assistant_message,
-                    session_id=session_id,
-                    stable_for_seconds=0.0,
-                    updated_at=latest_updated_at,
-                )
-            if require_new_assistant and assistant_message is None:
-                time.sleep(0.5)
-                continue
-            stable_for = time.monotonic() - stable_since
-            if stable_for >= quiet_period_sec:
-                return WaitResult(
-                    assistant_message=assistant_message,
-                    session_id=session_id,
-                    stable_for_seconds=stable_for,
-                    updated_at=latest_updated_at,
-                )
+            if result is not None:
+                return result
             time.sleep(0.5)
 
         raise WaitTimeoutError(
@@ -413,18 +361,169 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
                 time.sleep(0.2)
                 continue
             new_messages = messages[initial_count:]
-            if visibility == "chat" and any(
-                self._matches_chat_prompt(message, prompt) for message in new_messages
-            ):
-                return
-            if visibility == "system" and any(
-                self._matches_system_prompt(message, prompt) for message in new_messages
+            if any(
+                self._matches_recorded_prompt(message, prompt, visibility)
+                for message in new_messages
             ):
                 return
             time.sleep(0.2)
         raise PromptDeliveryError(
             f"Queue-only {visibility} prompt for {session_id} was not recorded "
             f"in session state within {timeout_sec:.0f}s."
+        )
+
+    def _payload_for_submission(
+        self,
+        *,
+        prompt: str,
+        visibility: str,
+        messages: list[JsonDict],
+        agent: str | None,
+        model: str | None,
+    ) -> JsonDict:
+        derived_agent, derived_model = observed_identity(messages)
+        payload = self._prompt_payload(
+            prompt=prompt,
+            visibility=visibility,
+            agent=agent or derived_agent,
+            model=model or derived_model,
+        )
+        queued_systems = pending_system_prompts(messages)
+        return self._apply_pending_system_prompts(
+            payload=payload,
+            visibility=visibility,
+            queued_systems=queued_systems,
+        )
+
+    def _apply_pending_system_prompts(
+        self,
+        *,
+        payload: JsonDict,
+        visibility: str,
+        queued_systems: list[str],
+    ) -> JsonDict:
+        if not queued_systems:
+            return payload
+        if visibility == "chat":
+            payload["system"] = "\n\n".join(queued_systems)
+            LOG.info(
+                "carrying %d queued system prompt(s) into continued chat prompt",
+                len(queued_systems),
+            )
+            return payload
+        current_system = payload.get("system")
+        merged = _merge_system_prompts(
+            queued_systems,
+            current_system if isinstance(current_system, str) else None,
+        )
+        if merged is not None:
+            payload["system"] = merged
+        LOG.info(
+            "merging %d queued system prompt(s) into continued system prompt",
+            len(queued_systems),
+        )
+        return payload
+
+    def _queue_prompt(
+        self,
+        session_id: str,
+        *,
+        prompt: str,
+        visibility: str,
+        context: SessionContext,
+        initial_messages: list[JsonDict],
+        payload: JsonDict,
+    ) -> PromptResult:
+        LOG.info("queue-only prompt %s visibility=%s", session_id, visibility)
+        payload["noReply"] = True
+        response = self._http.post(
+            f"/session/{session_id}/prompt_async",
+            headers=session_headers(context, content_type="application/json"),
+            json=payload,
+        )
+        response.raise_for_status()
+        self._wait_for_prompt_recording(
+            session_id,
+            context=context,
+            initial_count=len(initial_messages),
+            prompt=prompt,
+            visibility=visibility,
+        )
+        return PromptResult(assistant_message=None, session_id=session_id)
+
+    def _continue_prompt(
+        self,
+        session_id: str,
+        *,
+        visibility: str,
+        context: SessionContext,
+        payload: JsonDict,
+        initial_assistant_count: int,
+    ) -> PromptResult:
+        LOG.info("continued prompt %s visibility=%s", session_id, visibility)
+        with self._http.stream(
+            "POST",
+            f"/session/{session_id}/message",
+            headers=session_headers(
+                context,
+                accept="text/event-stream",
+                content_type="application/json",
+            ),
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            self._consume_stream(response.iter_lines())
+
+        messages = self.list_messages(session_id, context=context)
+        assistant_message = latest_assistant_text_since(messages, initial_assistant_count)
+        if assistant_message is None:
+            raise PromptDeliveryError(
+                f"Session {session_id} accepted a continued {visibility} prompt "
+                "but never produced a new assistant turn."
+            )
+        return PromptResult(assistant_message=assistant_message, session_id=session_id)
+
+    def _wait_snapshot(
+        self, session_id: str, *, context: SessionContext
+    ) -> tuple[int | float | None, list[JsonDict], tuple[object, ...]]:
+        session = self.get_session(session_id)
+        updated_at = self._session_updated_at(session)
+        messages = self.list_messages(session_id, context=context)
+        return updated_at, messages, self._idle_signature(updated_at, messages)
+
+    def _idle_wait_result(
+        self,
+        *,
+        session_id: str,
+        messages: list[JsonDict],
+        updated_at: int | float | None,
+        require_new_assistant: bool,
+        initial_assistant_count: int,
+        stable_since: float,
+        quiet_period_sec: float,
+    ) -> WaitResult | None:
+        assistant_message = (
+            latest_assistant_text_since(messages, initial_assistant_count)
+            if require_new_assistant
+            else latest_assistant_text(messages)
+        )
+        if not require_new_assistant and not has_pending_prompt(messages):
+            return WaitResult(
+                assistant_message=assistant_message,
+                session_id=session_id,
+                stable_for_seconds=0.0,
+                updated_at=updated_at,
+            )
+        if require_new_assistant and assistant_message is None:
+            return None
+        stable_for = time.monotonic() - stable_since
+        if stable_for < quiet_period_sec:
+            return None
+        return WaitResult(
+            assistant_message=assistant_message,
+            session_id=session_id,
+            stable_for_seconds=stable_for,
+            updated_at=updated_at,
         )
 
     @staticmethod
@@ -505,3 +604,9 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         if isinstance(parts, list) and flatten_text(parts) == prompt:
             return True
         return False
+
+    @classmethod
+    def _matches_recorded_prompt(cls, message: JsonDict, prompt: str, visibility: str) -> bool:
+        if visibility == "chat":
+            return cls._matches_chat_prompt(message, prompt)
+        return cls._matches_system_prompt(message, prompt)

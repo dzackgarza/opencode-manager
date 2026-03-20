@@ -96,11 +96,18 @@ def _resolved_config_path() -> Path:
     return Path.home() / ".config" / "opencode" / "opencode.json"
 
 
-def _doctor_report(command: DoctorCommand) -> DoctorReport:
-    resolved_base_url = validate_base_url(base_url())
-    config_path = _resolved_config_path()
-    sandbox_env_path = _sandbox_env_path()
-    checks = [
+def _doctor_checks(
+    resolved_base_url: str, config_path: Path, sandbox_env_path: Path | None
+) -> list[DoctorCheck]:
+    sandbox_detail = (
+        f"Centralized sandbox env file exists at {sandbox_env_path}."
+        if sandbox_env_path is not None
+        else (
+            "Centralized sandbox env file was not found via "
+            "OPX_SANDBOX_ENV or parent-directory search."
+        )
+    )
+    return [
         DoctorCheck(
             name="base_url",
             ok=True,
@@ -115,43 +122,44 @@ def _doctor_report(command: DoctorCommand) -> DoctorReport:
                 else f"Resolved OpenCode config is missing: {config_path}."
             ),
         ),
-        DoctorCheck(
-            name="sandbox_env",
-            ok=sandbox_env_path is not None,
-            detail=(
-                f"Centralized sandbox env file exists at {sandbox_env_path}."
-                if sandbox_env_path is not None
-                else (
-                    "Centralized sandbox env file was not found via "
-                    "OPX_SANDBOX_ENV or parent-directory search."
-                )
-            ),
-        ),
+        DoctorCheck(name="sandbox_env", ok=sandbox_env_path is not None, detail=sandbox_detail),
     ]
-    if not command.skip_server_check:
-        with httpx.Client(
-            base_url=resolved_base_url,
-            headers=auth_headers(),
-            timeout=command.timeout_sec,
-            follow_redirects=True,
-        ) as client:
-            for name, path in (("server_app", "/app"), ("server_health", "/global/health")):
-                try:
-                    response = client.get(path)
-                    ok = response.status_code == 200
-                    detail = f"{path} returned {response.status_code}."
-                except httpx.HTTPError as exc:
-                    ok = False
-                    detail = f"{path} failed: {exc}"
-                checks.append(DoctorCheck(name=name, ok=ok, detail=detail))
-    else:
-        checks.append(
+
+
+def _server_checks(command: DoctorCommand, resolved_base_url: str) -> list[DoctorCheck]:
+    if command.skip_server_check:
+        return [
             DoctorCheck(
                 name="server_checks",
                 ok=True,
                 detail="Server reachability checks skipped by request.",
             )
-        )
+        ]
+    checks: list[DoctorCheck] = []
+    with httpx.Client(
+        base_url=resolved_base_url,
+        headers=auth_headers(),
+        timeout=command.timeout_sec,
+        follow_redirects=True,
+    ) as client:
+        for name, path in (("server_app", "/app"), ("server_health", "/global/health")):
+            try:
+                response = client.get(path)
+                ok = response.status_code == 200
+                detail = f"{path} returned {response.status_code}."
+            except httpx.HTTPError as exc:
+                ok = False
+                detail = f"{path} failed: {exc}"
+            checks.append(DoctorCheck(name=name, ok=ok, detail=detail))
+    return checks
+
+
+def _doctor_report(command: DoctorCommand) -> DoctorReport:
+    resolved_base_url = validate_base_url(base_url())
+    config_path = _resolved_config_path()
+    sandbox_env_path = _sandbox_env_path()
+    checks = _doctor_checks(resolved_base_url, config_path, sandbox_env_path)
+    checks.extend(_server_checks(command, resolved_base_url))
 
     return DoctorReport(
         base_url=resolved_base_url,
@@ -202,7 +210,7 @@ def one_shot(
     *,
     agent: str | None = None,
     model: str | None = None,
-    transcript: bool = False,
+    render_transcript: Annotated[bool, Parameter(name="--transcript")] = False,
 ) -> None:
     """Create a session, continue it once, print the result, and delete it."""
     command = OneShotCommand.model_validate(
@@ -210,7 +218,7 @@ def one_shot(
             "prompt": prompt,
             "agent": agent,
             "model": model,
-            "transcript": transcript,
+            "transcript": render_transcript,
         }
     )
     with OpenCodeManagerClient() as client:
@@ -333,8 +341,7 @@ def chat(
         ),
     ] = False,
     no_reply: Annotated[
-        bool,
-        Parameter(help="Queue the prompt without resuming the agent turn.")
+        bool, Parameter(help="Queue the prompt without resuming the agent turn.")
     ] = False,
     json: bool = False,
 ) -> None:
@@ -416,10 +423,15 @@ def transcript(
 
 
 @app.command
-def final(session_id: str, prompt: str, *, transcript: bool = False) -> None:
+def final(
+    session_id: str,
+    prompt: str,
+    *,
+    render_transcript: Annotated[bool, Parameter(name="--transcript")] = False,
+) -> None:
     """Continue one final turn, print the result, and delete the session."""
     command = FinalCommand.model_validate(
-        {"session_id": session_id, "prompt": prompt, "transcript": transcript}
+        {"session_id": session_id, "prompt": prompt, "transcript": render_transcript}
     )
     with OpenCodeManagerClient() as client:
         context = client.session_context(command.session_id)
@@ -431,9 +443,7 @@ def final(session_id: str, prompt: str, *, transcript: bool = False) -> None:
                 context=context,
             )
             if command.transcript:
-                sys.stdout.write(
-                    _render_live_transcript(client, command.session_id, as_json=False)
-                )
+                sys.stdout.write(_render_live_transcript(client, command.session_id, as_json=False))
                 return
             messages = client.list_messages(command.session_id, context=context)
             assistant_message = assistant_texts(messages)
