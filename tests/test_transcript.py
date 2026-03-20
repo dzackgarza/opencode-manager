@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from opencode_manager.errors import TranscriptRenderError
 from opencode_manager.transcript import (
     RenderOptions,
     render_transcript_json,
@@ -76,3 +79,24 @@ def test_render_transcript_json_exposes_system_prompt_turns() -> None:
     turn = turns[0]
     assert turn["systemPrompt"] == "For the next answer, reply with ONLY SYSTEM_EDGE."
     assert turn["userPrompt"] == ""
+
+
+def test_render_transcript_json_renders_tool_step_details() -> None:
+    fixture = json.loads((FIXTURES / "sample-export.json").read_text(encoding="utf-8"))
+
+    rendered = render_transcript_json(fixture)
+
+    turns = rendered["turns"]
+    assert isinstance(turns, list)
+    first_assistant_message = turns[0]["assistantMessages"][0]
+    first_step = first_assistant_message["steps"][1]
+    assert first_step["type"] == "tool"
+    assert first_step["tool"] == "webfetch"
+    assert first_step["status"] == "success"
+    assert "https://example.com" in first_step["inputText"]
+    assert "example output" in first_step["outputText"]
+
+
+def test_render_transcript_json_rejects_invalid_export_shape() -> None:
+    with pytest.raises(TranscriptRenderError):
+        render_transcript_json({"info": [], "messages": {}})

@@ -43,7 +43,8 @@ def render(
         with OpenCodeManagerClient() as client:
             exported = client.transcript_export(command.session_id)
     else:
-        assert command.input_path is not None
+        if command.input_path is None:
+            raise OpxError("Input path must be provided when session ID is missing.")
         exported = load_transcript_export(command.input_path)
 
     content = (

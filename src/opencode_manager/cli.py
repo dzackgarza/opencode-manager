@@ -61,8 +61,29 @@ def _package_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _workspace_root() -> Path:
-    return _package_root().parents[1]
+def _sandbox_env_candidates() -> list[Path]:
+    explicit = os.environ.get("OPX_SANDBOX_ENV", "").strip()
+    if explicit:
+        return [Path(explicit).expanduser().resolve()]
+
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    roots = [Path.cwd(), _package_root()]
+    for root in roots:
+        for parent in (root, *root.parents):
+            candidate = parent / ".test-sandbox-env.sh"
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+    return candidates
+
+
+def _sandbox_env_path() -> Path | None:
+    for candidate in _sandbox_env_candidates():
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _resolved_config_path() -> Path:
@@ -73,10 +94,6 @@ def _resolved_config_path() -> Path:
     if xdg_config_home:
         return Path(xdg_config_home).expanduser().resolve() / "opencode" / "opencode.json"
     return Path.home() / ".config" / "opencode" / "opencode.json"
-
-
-def _sandbox_env_path() -> Path:
-    return _workspace_root() / ".test-sandbox-env.sh"
 
 
 def _doctor_report(command: DoctorCommand) -> DoctorReport:
@@ -100,11 +117,14 @@ def _doctor_report(command: DoctorCommand) -> DoctorReport:
         ),
         DoctorCheck(
             name="sandbox_env",
-            ok=sandbox_env_path.is_file(),
+            ok=sandbox_env_path is not None,
             detail=(
                 f"Centralized sandbox env file exists at {sandbox_env_path}."
-                if sandbox_env_path.is_file()
-                else f"Centralized sandbox env file is missing: {sandbox_env_path}."
+                if sandbox_env_path is not None
+                else (
+                    "Centralized sandbox env file was not found via "
+                    "OPX_SANDBOX_ENV or parent-directory search."
+                )
             ),
         ),
     ]
@@ -457,7 +477,7 @@ def doctor(
         print(f"base-url: {report.base_url}")
         print(f"cwd: {report.cwd}")
         print(f"config-path: {report.config_path}")
-        print(f"sandbox-env-path: {report.sandbox_env_path}")
+        print(f"sandbox-env-path: {report.sandbox_env_path or 'not found'}")
         for check in report.checks:
             status = "ok" if check.ok else "fail"
             print(f"{status}: {check.name}: {check.detail}")

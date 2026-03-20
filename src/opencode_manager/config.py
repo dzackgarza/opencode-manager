@@ -28,11 +28,7 @@ def default_session_context() -> SessionContext:
 
 
 def _encode_directory(directory: str) -> str:
-    try:
-        directory.encode("ascii")
-    except UnicodeEncodeError:
-        return quote(directory, safe="/._-")
-    return directory
+    return quote(directory, safe="/._-")
 
 
 def auth_headers() -> dict[str, str]:

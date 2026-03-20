@@ -129,6 +129,22 @@ def has_pending_prompt(messages: list[JsonDict]) -> bool:
     return False
 
 
+def _agent_from_info(info: JsonDict) -> str | None:
+    agent_value = info.get("agent")
+    return agent_value if isinstance(agent_value, str) and agent_value else None
+
+
+def _model_ref_from_info(info: JsonDict) -> str | None:
+    model = info.get("model")
+    if not isinstance(model, dict):
+        return None
+    provider = model.get("providerID")
+    model_name = model.get("modelID")
+    provider_id = provider if isinstance(provider, str) and provider else None
+    model_id = model_name if isinstance(model_name, str) and model_name else None
+    return f"{provider_id}/{model_id}" if provider_id and model_id else None
+
+
 def observed_identity(messages: list[JsonDict]) -> tuple[str | None, str | None]:
     """Derive the active responder identity from live session history."""
     for message in reversed(messages):
@@ -136,26 +152,8 @@ def observed_identity(messages: list[JsonDict]) -> tuple[str | None, str | None]
         if not isinstance(info, dict):
             continue
 
-        agent_value = info.get("agent")
-        agent = agent_value if isinstance(agent_value, str) and agent_value else None
-
-        provider_id: str | None = None
-        model_id: str | None = None
-        model = info.get("model")
-        if isinstance(model, dict):
-            provider = model.get("providerID")
-            model_name = model.get("modelID")
-            provider_id = provider if isinstance(provider, str) and provider else None
-            model_id = model_name if isinstance(model_name, str) and model_name else None
-
-        if provider_id is None:
-            provider = info.get("providerID")
-            provider_id = provider if isinstance(provider, str) and provider else None
-        if model_id is None:
-            model_name = info.get("modelID")
-            model_id = model_name if isinstance(model_name, str) and model_name else None
-
-        model_ref = f"{provider_id}/{model_id}" if provider_id and model_id else None
+        agent = _agent_from_info(info)
+        model_ref = _model_ref_from_info(info)
         if agent or model_ref:
             return agent, model_ref
 

@@ -290,6 +290,104 @@ def _build_turns(messages: list[JsonDict]) -> list[JsonDict]:
     return turns
 
 
+def _render_step(step: JsonDict) -> JsonDict | None:
+    part = step.get("part")
+    if not isinstance(part, dict):
+        return None
+
+    started_ms = step.get("started_ms")
+    completed_ms = step.get("completed_ms")
+    duration_hint_ms = step.get("duration_hint_ms")
+    duration_hint_source = step.get("duration_hint_source")
+    duration = _hinted_duration_text(
+        started_ms if isinstance(started_ms, int | float) else None,
+        completed_ms if isinstance(completed_ms, int | float) else None,
+        duration_hint_ms if isinstance(duration_hint_ms, int | float) else None,
+        duration_hint_source if isinstance(duration_hint_source, str) else None,
+    )
+    part_type = part.get("type")
+    if part_type == "tool":
+        state = part.get("state")
+        state_dict = state if isinstance(state, dict) else {}
+        return {
+            "duration": duration,
+            "heading": step["heading"],
+            "index": step["index"],
+            "inputText": _render_value(state_dict.get("input", {})),
+            "outputText": _render_value(state_dict["output"]) if "output" in state_dict else None,
+            "status": str(state_dict.get("status", "unknown")),
+            "tool": str(part.get("tool", "unknown")),
+            "type": "tool",
+        }
+    if part_type in {"text", "reasoning", "patch"}:
+        return {
+            "contentText": _render_value(part.get("text", part)),
+            "duration": duration,
+            "heading": step["heading"],
+            "index": step["index"],
+            "type": str(part_type),
+        }
+    return None
+
+
+def _render_assistant_message(message: JsonDict, *, index: int) -> JsonDict:
+    message_info = message.get("info")
+    info_dict = message_info if isinstance(message_info, dict) else {}
+    message_parts = message.get("parts")
+    parts = (
+        [part for part in message_parts if isinstance(part, dict)]
+        if isinstance(message_parts, list)
+        else []
+    )
+    rendered_steps = [
+        rendered for rendered in (_render_step(step) for step in _build_steps(message)) if rendered
+    ]
+    return {
+        "duration": _duration_text(_message_created_ms(message), _message_completed_ms(message)),
+        "finish": str(info_dict.get("finish", "unknown")),
+        "index": index,
+        "reasoning": _reasoning_parts(parts),
+        "steps": rendered_steps,
+        "text": _text_parts(parts),
+    }
+
+
+def _render_turn(turn: JsonDict) -> JsonDict:
+    assistant_messages = [
+        message
+        for message in _as_json_list(turn.get("assistant_messages"))
+        if isinstance(message, dict)
+    ]
+    user_message = turn.get("user_message")
+    if not isinstance(user_message, dict):
+        user_message = None
+    turn_start = turn.get("started_ms") or _message_created_ms(user_message)
+    turn_end = turn.get("completed_ms") or _message_completed_ms(
+        assistant_messages[-1] if assistant_messages else user_message
+    )
+    user_parts = _as_json_list(user_message.get("parts")) if user_message is not None else []
+    user_info = _as_json_dict(user_message.get("info")) if user_message is not None else {}
+    raw_system_prompt = user_info.get("system")
+    rendered_assistant_messages = [
+        _render_assistant_message(message, index=index)
+        for index, message in enumerate(assistant_messages, start=1)
+    ]
+    return {
+        "assistantMessages": rendered_assistant_messages,
+        "duration": _duration_text(
+            turn_start if isinstance(turn_start, int | float) else None,
+            turn_end if isinstance(turn_end, int | float) else None,
+        ),
+        "index": turn.get("index", 0),
+        "systemPrompt": (
+            raw_system_prompt.strip()
+            if isinstance(raw_system_prompt, str) and raw_system_prompt.strip()
+            else None
+        ),
+        "userPrompt": _text_parts(user_parts),
+    }
+
+
 def render_transcript_json(data: JsonDict) -> JsonDict:
     info = data.get("info")
     messages = data.get("messages")
@@ -299,106 +397,7 @@ def render_transcript_json(data: JsonDict) -> JsonDict:
         )
 
     turns = _build_turns([message for message in messages if isinstance(message, dict)])
-    rendered_turns: list[JsonDict] = []
-    for turn in turns:
-        assistant_messages = (
-            turn["assistant_messages"] if isinstance(turn["assistant_messages"], list) else []
-        )
-        user_message = turn["user_message"] if isinstance(turn["user_message"], dict) else None
-        turn_start = turn["started_ms"] or _message_created_ms(user_message)
-        turn_end = turn["completed_ms"] or _message_completed_ms(
-            assistant_messages[-1] if assistant_messages else user_message
-        )
-        rendered_assistant_messages: list[JsonDict] = []
-        for index, message in enumerate(assistant_messages, start=1):
-            message_info = message.get("info")
-            info_dict = message_info if isinstance(message_info, dict) else {}
-            message_parts = message.get("parts")
-            parts = (
-                [part for part in message_parts if isinstance(part, dict)]
-                if isinstance(message_parts, list)
-                else []
-            )
-            rendered_steps: list[JsonDict] = []
-            for step in _build_steps(message):
-                part = step["part"]
-                if not isinstance(part, dict):
-                    continue
-                duration = _hinted_duration_text(
-                    step["started_ms"] if isinstance(step["started_ms"], int | float) else None,
-                    step["completed_ms"] if isinstance(step["completed_ms"], int | float) else None,
-                    (
-                        step["duration_hint_ms"]
-                        if isinstance(step["duration_hint_ms"], int | float)
-                        else None
-                    ),
-                    (
-                        step["duration_hint_source"]
-                        if isinstance(step["duration_hint_source"], str)
-                        else None
-                    ),
-                )
-                part_type = part.get("type")
-                if part_type == "tool":
-                    state = part.get("state")
-                    state_dict = state if isinstance(state, dict) else {}
-                    rendered_steps.append(
-                        {
-                            "duration": duration,
-                            "heading": step["heading"],
-                            "index": step["index"],
-                            "inputText": _render_value(state_dict.get("input", {})),
-                            "outputText": (
-                                _render_value(state_dict["output"])
-                                if "output" in state_dict
-                                else None
-                            ),
-                            "status": str(state_dict.get("status", "unknown")),
-                            "tool": str(part.get("tool", "unknown")),
-                            "type": "tool",
-                        }
-                    )
-                elif part_type in {"text", "reasoning", "patch"}:
-                    rendered_steps.append(
-                        {
-                            "contentText": _render_value(part.get("text", part)),
-                            "duration": duration,
-                            "heading": step["heading"],
-                            "index": step["index"],
-                            "type": str(part_type),
-                        }
-                    )
-            rendered_assistant_messages.append(
-                {
-                    "duration": _duration_text(
-                        _message_created_ms(message), _message_completed_ms(message)
-                    ),
-                    "finish": str(info_dict.get("finish", "unknown")),
-                    "index": index,
-                    "reasoning": _reasoning_parts(parts),
-                    "steps": rendered_steps,
-                    "text": _text_parts(parts),
-                }
-            )
-        user_parts = _as_json_list(user_message.get("parts")) if user_message is not None else []
-        user_info = _as_json_dict(user_message.get("info")) if user_message is not None else {}
-        raw_system_prompt = user_info.get("system")
-        rendered_turns.append(
-            {
-                "assistantMessages": rendered_assistant_messages,
-                "duration": _duration_text(
-                    turn_start if isinstance(turn_start, int | float) else None,
-                    turn_end if isinstance(turn_end, int | float) else None,
-                ),
-                "index": turn["index"],
-                "systemPrompt": (
-                    raw_system_prompt.strip()
-                    if isinstance(raw_system_prompt, str) and raw_system_prompt.strip()
-                    else None
-                ),
-                "userPrompt": _text_parts(user_parts),
-            }
-        )
+    rendered_turns = [_render_turn(turn) for turn in turns]
     return {
         "directory": str(info.get("directory", "unknown")),
         "sessionID": str(info.get("id", "unknown")),

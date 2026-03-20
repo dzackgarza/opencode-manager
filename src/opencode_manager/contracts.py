@@ -193,7 +193,7 @@ class DoctorReport(StrictModel):
     base_url: str
     cwd: str
     config_path: str
-    sandbox_env_path: str
+    sandbox_env_path: str | None
     checks: list[DoctorCheck]
 
     @property

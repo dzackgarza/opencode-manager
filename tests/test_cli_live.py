@@ -242,6 +242,25 @@ def test_delete_removes_a_persistent_session_explicitly(live_runtime: LiveRuntim
     live_runtime.created_sessions.remove(session_id)
 
 
+def test_doctor_reports_live_server_and_sandbox_state(live_runtime: LiveRuntime) -> None:
+    result = live_runtime.run("doctor", "--json")
+
+    assert result.exit_code == 0, result.stderr
+    payload = result.json()
+    checks_list = payload["checks"]
+    assert isinstance(checks_list, list)
+    checks = {
+        check["name"]: check
+        for check in checks_list
+        if isinstance(check, dict) and isinstance(check.get("name"), str)
+    }
+    assert checks["base_url"]["ok"] is True
+    assert checks["config_path"]["ok"] is True
+    assert checks["sandbox_env"]["ok"] is True
+    assert checks["server_app"]["ok"] is True
+    assert checks["server_health"]["ok"] is True
+
+
 def test_final_deletes_the_session_after_the_last_turn(live_runtime: LiveRuntime) -> None:
     session_id = live_runtime.begin("Reply with ONLY OPEN.")
 
