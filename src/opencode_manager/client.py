@@ -181,7 +181,7 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         )
         self._sdk = Opencode(base_url=self._base_url, timeout=timeout, max_retries=0)
 
-    def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+    def __exit__(self, _exc_type: object, _exc: object, _exc_tb: object) -> None:
         self.close()
 
     def close(self) -> None:
