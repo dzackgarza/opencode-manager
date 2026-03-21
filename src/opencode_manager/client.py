@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from opencode_ai import Opencode
@@ -451,6 +452,25 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         )
         return PromptResult(assistant_message=None, session_id=session_id)
 
+    def _post_message_stream(
+        self,
+        session_id: str,
+        *,
+        context: SessionContext,
+        payload: JsonDict,
+    ) -> AbstractContextManager[Any]:
+        """Return an HTTP stream context manager for POST /session/{id}/message."""
+        return self._http.stream(
+            "POST",
+            f"/session/{session_id}/message",
+            headers=session_headers(
+                context,
+                accept="text/event-stream",
+                content_type="application/json",
+            ),
+            json=payload,
+        )
+
     def _continue_prompt(
         self,
         session_id: str,
@@ -461,16 +481,7 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         initial_assistant_count: int,
     ) -> PromptResult:
         LOG.info("continued prompt %s visibility=%s", session_id, visibility)
-        with self._http.stream(
-            "POST",
-            f"/session/{session_id}/message",
-            headers=session_headers(
-                context,
-                accept="text/event-stream",
-                content_type="application/json",
-            ),
-            json=payload,
-        ) as response:
+        with self._post_message_stream(session_id, context=context, payload=payload) as response:
             response.raise_for_status()
             self._consume_stream(response.iter_lines())
 
@@ -497,16 +508,7 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         determine when the turn is complete.
         """
         LOG.info("detached prompt submission %s visibility=%s", session_id, visibility)
-        with self._http.stream(
-            "POST",
-            f"/session/{session_id}/message",
-            headers=session_headers(
-                context,
-                accept="text/event-stream",
-                content_type="application/json",
-            ),
-            json=payload,
-        ) as response:
+        with self._post_message_stream(session_id, context=context, payload=payload) as response:
             response.raise_for_status()
             # Intentionally do not consume the stream — confirm HTTP acceptance only.
             # The server continues inference asynchronously.

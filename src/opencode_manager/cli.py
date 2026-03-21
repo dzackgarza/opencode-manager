@@ -234,7 +234,7 @@ def one_shot(
                 model=command.model,
                 context=context,
             )
-            client.wait_until_idle(
+            wait_result = client.wait_until_idle(
                 session_id,
                 require_new_assistant=True,
                 initial_assistant_count=0,
@@ -243,13 +243,11 @@ def one_shot(
             if command.transcript:
                 sys.stdout.write(_render_live_transcript(client, session_id, as_json=False))
                 return
-            messages = client.list_messages(session_id, context=context)
-            assistant_message = assistant_texts(messages)
-            if not assistant_message:
+            if not wait_result.assistant_message:
                 raise OpxError(
                     f"No assistant reply was recorded for one-shot session {session_id}."
                 )
-            print(assistant_message[-1])
+            print(wait_result.assistant_message)
         finally:
             client.delete_session(session_id, context=context)
 

@@ -27,6 +27,12 @@ def test_one_shot_proves_real_turn_then_deletes_the_session(live_runtime: LiveRu
     assert response.status_code == 404
 
 
+def test_one_shot_default_output_prints_assistant_message(live_runtime: LiveRuntime) -> None:
+    result = live_runtime.run("one-shot", "Reply with ONLY PLAIN_OK.")
+    assert result.exit_code == 0, result.stderr
+    assert "PLAIN_OK" in result.stdout
+
+
 def test_begin_session_returns_session_id_immediately(live_runtime: LiveRuntime) -> None:
     """begin-session must return a session ID without waiting for model output."""
     result = live_runtime.run(
