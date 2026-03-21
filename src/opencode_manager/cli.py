@@ -212,7 +212,7 @@ def one_shot(
     model: str | None = None,
     render_transcript: Annotated[bool, Parameter(name="--transcript")] = False,
 ) -> None:
-    """Create a session, continue it once, print the result, and delete it."""
+    """Create a session, run a complete turn (including tool calls), print result, and delete it."""
     command = OneShotCommand.model_validate(
         {
             "prompt": prompt,
@@ -226,12 +226,18 @@ def one_shot(
         session_id = str(session["id"])
         context = default_session_context()
         try:
-            client.submit_prompt(
+            client.submit_prompt_no_wait(
                 session_id,
                 prompt=command.prompt,
                 visibility="chat",
                 agent=command.agent,
                 model=command.model,
+                context=context,
+            )
+            client.wait_until_idle(
+                session_id,
+                require_new_assistant=True,
+                initial_assistant_count=0,
                 context=context,
             )
             if command.transcript:
@@ -256,7 +262,7 @@ def begin_session(
     model: str | None = None,
     json: bool = False,
 ) -> None:
-    """Create a prolonged session and run the opening turn."""
+    """Create a session and submit the opening prompt. Use `ocm wait` to block until idle."""
     command = BeginSessionCommand.model_validate(
         {"prompt": prompt, "agent": agent, "model": model, "json_output": json}
     )
@@ -265,7 +271,7 @@ def begin_session(
         session_id = str(session["id"])
         context = default_session_context()
         try:
-            client.submit_prompt(
+            client.submit_prompt_no_wait(
                 session_id,
                 prompt=command.prompt,
                 visibility="chat",

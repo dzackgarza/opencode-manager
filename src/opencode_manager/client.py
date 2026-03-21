@@ -483,6 +483,67 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
             )
         return PromptResult(assistant_message=assistant_message, session_id=session_id)
 
+    def _submit_detached(
+        self,
+        session_id: str,
+        *,
+        visibility: str,
+        context: SessionContext,
+        payload: JsonDict,
+    ) -> PromptResult:
+        """POST prompt to start an agent turn; detach immediately without waiting for text.
+
+        The inference continues server-side. Caller must use wait_until_idle() to
+        determine when the turn is complete.
+        """
+        LOG.info("detached prompt submission %s visibility=%s", session_id, visibility)
+        with self._http.stream(
+            "POST",
+            f"/session/{session_id}/message",
+            headers=session_headers(
+                context,
+                accept="text/event-stream",
+                content_type="application/json",
+            ),
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            # Intentionally do not consume the stream — confirm HTTP acceptance only.
+            # The server continues inference asynchronously.
+        return PromptResult(assistant_message=None, session_id=session_id)
+
+    def submit_prompt_no_wait(
+        self,
+        session_id: str,
+        *,
+        prompt: str,
+        visibility: str,
+        agent: str | None = None,
+        model: str | None = None,
+        context: SessionContext | None = None,
+    ) -> PromptResult:
+        """Submit a prompt to start an agent turn without waiting for a text response.
+
+        Use wait_until_idle() afterward to block until the full turn is complete.
+        """
+        if visibility not in {"chat", "system"}:
+            raise PromptDeliveryError(f"Unsupported prompt visibility: {visibility}")
+        context = context or self.session_context(session_id)
+        initial_messages = self.list_messages(session_id, context=context)
+        payload = self._payload_for_submission(
+            prompt=prompt,
+            visibility=visibility,
+            messages=initial_messages,
+            agent=agent,
+            model=model,
+        )
+        return self._submit_detached(
+            session_id,
+            visibility=visibility,
+            context=context,
+            payload=payload,
+        )
+
     def _wait_snapshot(
         self, session_id: str, *, context: SessionContext
     ) -> tuple[int | float | None, list[JsonDict], tuple[object, ...]]:

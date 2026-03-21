@@ -6,7 +6,7 @@ import subprocess
 import httpx
 import pytest
 
-from .conftest import ROOT, LiveRuntime
+from .conftest import PROOF_AGENT, ROOT, LiveRuntime
 
 pytestmark = pytest.mark.live
 
@@ -27,11 +27,45 @@ def test_one_shot_proves_real_turn_then_deletes_the_session(live_runtime: LiveRu
     assert response.status_code == 404
 
 
-def test_begin_session_proves_the_initial_completed_turn_contract(
+def test_begin_session_returns_session_id_immediately(live_runtime: LiveRuntime) -> None:
+    """begin-session must return a session ID without waiting for model output."""
+    result = live_runtime.run(
+        "begin-session", "Reply with ONLY READY.", "--agent", PROOF_AGENT, "--json"
+    )
+    assert result.exit_code == 0, result.stderr
+    session_id = str(result.json()["sessionID"])
+    live_runtime.created_sessions.append(session_id)
+
+    # Session must not have been deleted
+    assert session_id in live_runtime.session_ids()
+
+
+def test_begin_session_does_not_delete_session_before_turn_completes(
     live_runtime: LiveRuntime,
 ) -> None:
-    payload = live_runtime.begin_json("Reply with ONLY READY.")
-    session_id = str(payload["sessionID"])
+    """begin-session must leave the session alive even if the model hasn't produced text yet."""
+    result = live_runtime.run(
+        "begin-session", "Reply with ONLY ALIVE.", "--agent", PROOF_AGENT, "--json"
+    )
+    assert result.exit_code == 0, result.stderr
+    session_id = str(result.json()["sessionID"])
+    live_runtime.created_sessions.append(session_id)
+
+    sessions = live_runtime.session_ids()
+    assert session_id in sessions
+
+
+def test_begin_session_wait_transcript_round_trip(live_runtime: LiveRuntime) -> None:
+    """Canonical continued-session pattern: begin-session → wait → transcript."""
+    result = live_runtime.run(
+        "begin-session", "Reply with ONLY READY.", "--agent", PROOF_AGENT, "--json"
+    )
+    assert result.exit_code == 0, result.stderr
+    session_id = str(result.json()["sessionID"])
+    live_runtime.created_sessions.append(session_id)
+
+    waited = live_runtime.run("wait", session_id)
+    assert waited.exit_code == 0, waited.stderr
 
     transcript = live_runtime.transcript_json(session_id)
     turns = transcript["turns"]
