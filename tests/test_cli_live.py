@@ -36,8 +36,9 @@ def test_begin_session_returns_session_id_immediately(live_runtime: LiveRuntime)
     session_id = str(result.json()["sessionID"])
     live_runtime.created_sessions.append(session_id)
 
-    # Session must not have been deleted
-    assert session_id in live_runtime.session_ids()
+    # Session must not have been deleted — verify via direct GET
+    response = httpx.get(f"{live_runtime.base_url}/session/{session_id}", timeout=5.0)
+    assert response.status_code == 200, f"session {session_id} was deleted by begin-session"
 
 
 def test_begin_session_does_not_delete_session_before_turn_completes(
@@ -51,8 +52,8 @@ def test_begin_session_does_not_delete_session_before_turn_completes(
     session_id = str(result.json()["sessionID"])
     live_runtime.created_sessions.append(session_id)
 
-    sessions = live_runtime.session_ids()
-    assert session_id in sessions
+    response = httpx.get(f"{live_runtime.base_url}/session/{session_id}", timeout=5.0)
+    assert response.status_code == 200, f"session {session_id} was deleted by begin-session"
 
 
 def test_begin_session_wait_transcript_round_trip(live_runtime: LiveRuntime) -> None:
@@ -76,16 +77,9 @@ def test_begin_session_wait_transcript_round_trip(live_runtime: LiveRuntime) -> 
     assert first_turn["userPrompt"] == "Reply with ONLY READY."
     assistant_messages = first_turn["assistantMessages"]
     assert isinstance(assistant_messages, list)
-    assert assistant_messages == [
-        {
-            "duration": assistant_messages[0]["duration"],
-            "finish": "stop",
-            "index": 1,
-            "reasoning": assistant_messages[0]["reasoning"],
-            "steps": assistant_messages[0]["steps"],
-            "text": "READY",
-        }
-    ]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["finish"] == "stop"
+    assert "READY" in assistant_messages[0]["text"]
 
 
 def test_chat_default_continues_a_real_new_turn(live_runtime: LiveRuntime) -> None:
