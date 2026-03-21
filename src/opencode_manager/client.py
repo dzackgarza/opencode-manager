@@ -261,6 +261,26 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         context = self.session_context(session_id)
         return {"info": session, "messages": self.list_messages(session_id, context=context)}
 
+    def _prepare_submission(
+        self,
+        session_id: str,
+        *,
+        prompt: str,
+        visibility: str,
+        agent: str | None,
+        model: str | None,
+        context: SessionContext | None,
+    ) -> tuple[SessionContext, list[JsonDict], JsonDict]:
+        """Validate, resolve context, fetch history, and build the prompt payload."""
+        if visibility not in {"chat", "system"}:
+            raise PromptDeliveryError(f"Unsupported prompt visibility: {visibility}")
+        ctx = context or self.session_context(session_id)
+        messages = self.list_messages(session_id, context=ctx)
+        payload = self._payload_for_submission(
+            prompt=prompt, visibility=visibility, messages=messages, agent=agent, model=model
+        )
+        return ctx, messages, payload
+
     def submit_prompt(
         self,
         session_id: str,
@@ -273,35 +293,18 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         context: SessionContext | None = None,
     ) -> PromptResult:
         """Submit a workflow prompt and verify the intended transport semantics."""
-        if visibility not in {"chat", "system"}:
-            raise PromptDeliveryError(f"Unsupported prompt visibility: {visibility}")
-
-        context = context or self.session_context(session_id)
-        initial_messages = self.list_messages(session_id, context=context)
-        initial_assistant_count = len(assistant_texts(initial_messages))
-        payload = self._payload_for_submission(
-            prompt=prompt,
-            visibility=visibility,
-            messages=initial_messages,
-            agent=agent,
-            model=model,
+        ctx, messages, payload = self._prepare_submission(
+            session_id, prompt=prompt, visibility=visibility,
+            agent=agent, model=model, context=context,
         )
-
         if no_reply:
             return self._queue_prompt(
-                session_id,
-                prompt=prompt,
-                visibility=visibility,
-                context=context,
-                initial_messages=initial_messages,
-                payload=payload,
+                session_id, prompt=prompt, visibility=visibility,
+                context=ctx, initial_messages=messages, payload=payload,
             )
         return self._continue_prompt(
-            session_id,
-            visibility=visibility,
-            context=context,
-            payload=payload,
-            initial_assistant_count=initial_assistant_count,
+            session_id, visibility=visibility, context=ctx,
+            payload=payload, initial_assistant_count=len(assistant_texts(messages)),
         )
 
     def wait_until_idle(
@@ -528,22 +531,12 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
 
         Use wait_until_idle() afterward to block until the full turn is complete.
         """
-        if visibility not in {"chat", "system"}:
-            raise PromptDeliveryError(f"Unsupported prompt visibility: {visibility}")
-        context = context or self.session_context(session_id)
-        initial_messages = self.list_messages(session_id, context=context)
-        payload = self._payload_for_submission(
-            prompt=prompt,
-            visibility=visibility,
-            messages=initial_messages,
-            agent=agent,
-            model=model,
+        ctx, _, payload = self._prepare_submission(
+            session_id, prompt=prompt, visibility=visibility,
+            agent=agent, model=model, context=context,
         )
         return self._submit_detached(
-            session_id,
-            visibility=visibility,
-            context=context,
-            payload=payload,
+            session_id, visibility=visibility, context=ctx, payload=payload
         )
 
     def _wait_snapshot(

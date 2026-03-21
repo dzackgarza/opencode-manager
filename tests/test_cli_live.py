@@ -71,19 +71,14 @@ def test_begin_session_wait_transcript_round_trip(live_runtime: LiveRuntime) -> 
     session_id = str(result.json()["sessionID"])
     live_runtime.created_sessions.append(session_id)
 
-    waited = live_runtime.run("wait", session_id)
-    assert waited.exit_code == 0, waited.stderr
+    assert live_runtime.run("wait", session_id).exit_code == 0
 
     transcript = live_runtime.transcript_json(session_id)
     turns = transcript["turns"]
-    assert isinstance(turns, list)
-    assert len(turns) == 1
-    first_turn = turns[0]
-    assert isinstance(first_turn, dict)
-    assert first_turn["userPrompt"] == "Reply with ONLY READY."
-    assistant_messages = first_turn["assistantMessages"]
-    assert isinstance(assistant_messages, list)
-    assert len(assistant_messages) == 1
+    assert isinstance(turns, list) and len(turns) == 1
+    assert turns[0]["userPrompt"] == "Reply with ONLY READY."
+    assistant_messages = turns[0]["assistantMessages"]
+    assert isinstance(assistant_messages, list) and len(assistant_messages) == 1
     assert assistant_messages[0]["finish"] == "stop"
     assert "READY" in assistant_messages[0]["text"]
 
