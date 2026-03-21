@@ -529,8 +529,7 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     ) -> PromptResult:
         """Submit a prompt to start an agent turn without waiting for a text response.
 
-        Use wait_until_idle() afterward to block until the full turn is complete.
-        """
+        Use wait_until_idle() afterward to block until the full turn is complete."""
         ctx, _, payload = self._prepare_submission(
             session_id, prompt=prompt, visibility=visibility,
             agent=agent, model=model, context=context,
