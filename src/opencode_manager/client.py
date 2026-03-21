@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from opencode_ai import Opencode
@@ -180,7 +181,7 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         )
         self._sdk = Opencode(base_url=self._base_url, timeout=timeout, max_retries=0)
 
-    def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+    def __exit__(self, _exc_type: object, _exc: object, _exc_tb: object) -> None:
         self.close()
 
     def close(self) -> None:
@@ -260,6 +261,26 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         context = self.session_context(session_id)
         return {"info": session, "messages": self.list_messages(session_id, context=context)}
 
+    def _prepare_submission(
+        self,
+        session_id: str,
+        *,
+        prompt: str,
+        visibility: str,
+        agent: str | None,
+        model: str | None,
+        context: SessionContext | None,
+    ) -> tuple[SessionContext, list[JsonDict], JsonDict]:
+        """Validate, resolve context, fetch history, and build the prompt payload."""
+        if visibility not in {"chat", "system"}:
+            raise PromptDeliveryError(f"Unsupported prompt visibility: {visibility}")
+        ctx = context or self.session_context(session_id)
+        messages = self.list_messages(session_id, context=ctx)
+        payload = self._payload_for_submission(
+            prompt=prompt, visibility=visibility, messages=messages, agent=agent, model=model
+        )
+        return ctx, messages, payload
+
     def submit_prompt(
         self,
         session_id: str,
@@ -272,35 +293,18 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         context: SessionContext | None = None,
     ) -> PromptResult:
         """Submit a workflow prompt and verify the intended transport semantics."""
-        if visibility not in {"chat", "system"}:
-            raise PromptDeliveryError(f"Unsupported prompt visibility: {visibility}")
-
-        context = context or self.session_context(session_id)
-        initial_messages = self.list_messages(session_id, context=context)
-        initial_assistant_count = len(assistant_texts(initial_messages))
-        payload = self._payload_for_submission(
-            prompt=prompt,
-            visibility=visibility,
-            messages=initial_messages,
-            agent=agent,
-            model=model,
+        ctx, messages, payload = self._prepare_submission(
+            session_id, prompt=prompt, visibility=visibility,
+            agent=agent, model=model, context=context,
         )
-
         if no_reply:
             return self._queue_prompt(
-                session_id,
-                prompt=prompt,
-                visibility=visibility,
-                context=context,
-                initial_messages=initial_messages,
-                payload=payload,
+                session_id, prompt=prompt, visibility=visibility,
+                context=ctx, initial_messages=messages, payload=payload,
             )
         return self._continue_prompt(
-            session_id,
-            visibility=visibility,
-            context=context,
-            payload=payload,
-            initial_assistant_count=initial_assistant_count,
+            session_id, visibility=visibility, context=ctx,
+            payload=payload, initial_assistant_count=len(assistant_texts(messages)),
         )
 
     def wait_until_idle(
@@ -451,6 +455,25 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         )
         return PromptResult(assistant_message=None, session_id=session_id)
 
+    def _post_message_stream(
+        self,
+        session_id: str,
+        *,
+        context: SessionContext,
+        payload: JsonDict,
+    ) -> AbstractContextManager[Any]:
+        """Return an HTTP stream context manager for POST /session/{id}/message."""
+        return self._http.stream(
+            "POST",
+            f"/session/{session_id}/message",
+            headers=session_headers(
+                context,
+                accept="text/event-stream",
+                content_type="application/json",
+            ),
+            json=payload,
+        )
+
     def _continue_prompt(
         self,
         session_id: str,
@@ -461,16 +484,7 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         initial_assistant_count: int,
     ) -> PromptResult:
         LOG.info("continued prompt %s visibility=%s", session_id, visibility)
-        with self._http.stream(
-            "POST",
-            f"/session/{session_id}/message",
-            headers=session_headers(
-                context,
-                accept="text/event-stream",
-                content_type="application/json",
-            ),
-            json=payload,
-        ) as response:
+        with self._post_message_stream(session_id, context=context, payload=payload) as response:
             response.raise_for_status()
             self._consume_stream(response.iter_lines())
 
@@ -482,6 +496,47 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
                 "but never produced a new assistant turn."
             )
         return PromptResult(assistant_message=assistant_message, session_id=session_id)
+
+    def _submit_detached(
+        self,
+        session_id: str,
+        *,
+        visibility: str,
+        context: SessionContext,
+        payload: JsonDict,
+    ) -> PromptResult:
+        """POST prompt to start an agent turn; detach immediately without waiting for text.
+
+        The inference continues server-side. Caller must use wait_until_idle() to
+        determine when the turn is complete.
+        """
+        LOG.info("detached prompt submission %s visibility=%s", session_id, visibility)
+        with self._post_message_stream(session_id, context=context, payload=payload) as response:
+            response.raise_for_status()
+            # Intentionally do not consume the stream — confirm HTTP acceptance only.
+            # The server continues inference asynchronously.
+        return PromptResult(assistant_message=None, session_id=session_id)
+
+    def submit_prompt_no_wait(
+        self,
+        session_id: str,
+        *,
+        prompt: str,
+        visibility: str,
+        agent: str | None = None,
+        model: str | None = None,
+        context: SessionContext | None = None,
+    ) -> PromptResult:
+        """Submit a prompt to start an agent turn without waiting for a text response.
+
+        Use wait_until_idle() afterward to block until the full turn is complete."""
+        ctx, _, payload = self._prepare_submission(
+            session_id, prompt=prompt, visibility=visibility,
+            agent=agent, model=model, context=context,
+        )
+        return self._submit_detached(
+            session_id, visibility=visibility, context=ctx, payload=payload
+        )
 
     def _wait_snapshot(
         self, session_id: str, *, context: SessionContext

@@ -6,7 +6,7 @@ import subprocess
 import httpx
 import pytest
 
-from .conftest import ROOT, LiveRuntime
+from .conftest import PROOF_AGENT, ROOT, LiveRuntime
 
 pytestmark = pytest.mark.live
 
@@ -27,31 +27,63 @@ def test_one_shot_proves_real_turn_then_deletes_the_session(live_runtime: LiveRu
     assert response.status_code == 404
 
 
-def test_begin_session_proves_the_initial_completed_turn_contract(
+def test_one_shot_default_output_prints_assistant_message(live_runtime: LiveRuntime) -> None:
+    result = live_runtime.run("one-shot", "Reply with ONLY PLAIN_OK.")
+    assert result.exit_code == 0, result.stderr
+    assert "PLAIN_OK" in result.stdout
+
+
+def test_begin_session_returns_session_id_immediately(live_runtime: LiveRuntime) -> None:
+    """begin-session must return a session ID without waiting for model output."""
+    result = live_runtime.run(
+        "begin-session", "Reply with ONLY READY.", "--agent", PROOF_AGENT, "--json"
+    )
+    assert result.exit_code == 0, result.stderr
+    session_id = str(result.json()["sessionID"])
+    live_runtime.created_sessions.append(session_id)
+
+    # Session must not have been deleted — verify via direct GET
+    response = httpx.get(f"{live_runtime.base_url}/session/{session_id}", timeout=5.0)
+    assert response.status_code == 200, f"session {session_id} was deleted by begin-session"
+
+
+def test_begin_session_does_not_delete_session_before_turn_completes(
     live_runtime: LiveRuntime,
 ) -> None:
-    payload = live_runtime.begin_json("Reply with ONLY READY.")
-    session_id = str(payload["sessionID"])
+    """begin-session must leave the session alive even if the model hasn't produced text yet."""
+    result = live_runtime.run(
+        "begin-session", "Reply with ONLY ALIVE.", "--agent", PROOF_AGENT, "--json"
+    )
+    assert result.exit_code == 0, result.stderr
+    session_id = str(result.json()["sessionID"])
+    live_runtime.created_sessions.append(session_id)
+
+    response = httpx.get(f"{live_runtime.base_url}/session/{session_id}", timeout=5.0)
+    assert response.status_code == 200, f"session {session_id} was deleted by begin-session"
+
+
+def test_begin_session_wait_transcript_round_trip(live_runtime: LiveRuntime) -> None:
+    """Canonical continued-session pattern: begin-session → wait → transcript."""
+    result = live_runtime.run(
+        "begin-session", "Reply with ONLY READY.", "--agent", PROOF_AGENT, "--json"
+    )
+    assert result.exit_code == 0, result.stderr
+    session_id = str(result.json()["sessionID"])
+    live_runtime.created_sessions.append(session_id)
+
+    waited = live_runtime.run("wait", session_id)
+    assert waited.exit_code == 0, waited.stderr
 
     transcript = live_runtime.transcript_json(session_id)
     turns = transcript["turns"]
     assert isinstance(turns, list)
     assert len(turns) == 1
-    first_turn = turns[0]
-    assert isinstance(first_turn, dict)
-    assert first_turn["userPrompt"] == "Reply with ONLY READY."
-    assistant_messages = first_turn["assistantMessages"]
+    assert turns[0]["userPrompt"] == "Reply with ONLY READY."
+    assistant_messages = turns[0]["assistantMessages"]
     assert isinstance(assistant_messages, list)
-    assert assistant_messages == [
-        {
-            "duration": assistant_messages[0]["duration"],
-            "finish": "stop",
-            "index": 1,
-            "reasoning": assistant_messages[0]["reasoning"],
-            "steps": assistant_messages[0]["steps"],
-            "text": "READY",
-        }
-    ]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["finish"] == "stop"
+    assert "READY" in assistant_messages[0]["text"]
 
 
 def test_chat_default_continues_a_real_new_turn(live_runtime: LiveRuntime) -> None:

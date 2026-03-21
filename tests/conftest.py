@@ -58,6 +58,8 @@ class LiveRuntime:
         assert result.exit_code == 0, result.stderr
         session_id = str(result.json()["sessionID"])
         self.created_sessions.append(session_id)
+        waited = self.run("wait", session_id)
+        assert waited.exit_code == 0, waited.stderr
         return session_id
 
     def begin_json(self, prompt: str) -> dict[str, object]:
@@ -66,6 +68,8 @@ class LiveRuntime:
         payload = result.json()
         session_id = str(payload["sessionID"])
         self.created_sessions.append(session_id)
+        waited = self.run("wait", session_id)
+        assert waited.exit_code == 0, waited.stderr
         return payload
 
     def transcript_json(self, session_id: str) -> dict[str, object]:
