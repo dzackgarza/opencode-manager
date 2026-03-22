@@ -589,12 +589,14 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
 
         Use wait_until_idle() afterward to block until the full turn is complete."""
         submission = self._prepare_submission(session_id, request)
-        return self._submit_detached(
+        result = self._submit_detached(
             session_id,
             visibility=submission.request.visibility,
             context=submission.context,
             payload=submission.payload,
         )
+        self._wait_for_prompt_recording(session_id, submission)
+        return result
 
     def _wait_snapshot(
         self, session_id: str, *, context: SessionContext
