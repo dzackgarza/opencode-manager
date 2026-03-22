@@ -24,5 +24,6 @@
       "model": "github-copilot/gpt-4.1"
     }
   },
-  "plugin": []
+  "plugin": [],
+  "default_agent": "opencode-manager-proof"
 }

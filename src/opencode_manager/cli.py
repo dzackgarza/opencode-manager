@@ -106,6 +106,23 @@ def _resolved_config_path(start: Path | None = None) -> tuple[str, Path]:
     return "global", _global_config_path()
 
 
+def _project_default_agent(start: Path | None = None) -> str | None:
+    project_config = _project_config_path(start)
+    if project_config is None:
+        return None
+    try:
+        payload = json_lib.loads(project_config.read_text(encoding="utf-8"))
+    except (OSError, json_lib.JSONDecodeError) as exc:
+        raise OpxError(f"Failed to parse project OpenCode config at {project_config}: {exc}") from exc
+    if not isinstance(payload, dict):
+        return None
+    default_agent = payload.get("default_agent")
+    if not isinstance(default_agent, str):
+        return None
+    value = default_agent.strip()
+    return value or None
+
+
 def _doctor_checks(
     resolved_base_url: str, config_origin: str, config_path: Path, proof_workspace: Path
 ) -> list[DoctorCheck]:
@@ -238,13 +255,14 @@ def one_shot(
         session = client.create_session(title=f"ocm:one-shot:{datetime.now(tz=UTC).isoformat()}")
         session_id = str(session["id"])
         context = client.session_context(session_id)
+        selected_agent = command.agent or _project_default_agent(Path.cwd())
         try:
             client.submit_prompt_no_wait(
                 session_id,
                 SubmissionRequest(
                     prompt=command.prompt,
                     visibility="chat",
-                    agent=command.agent,
+                    agent=selected_agent,
                     model=command.model,
                     context=context,
                 ),
@@ -282,13 +300,14 @@ def begin_session(
         session = client.create_session(title=f"ocm:session:{datetime.now(tz=UTC).isoformat()}")
         session_id = str(session["id"])
         context = default_session_context()
+        selected_agent = command.agent or _project_default_agent(Path.cwd())
         try:
             client.submit_prompt_no_wait(
                 session_id,
                 SubmissionRequest(
                     prompt=command.prompt,
                     visibility="chat",
-                    agent=command.agent,
+                    agent=selected_agent,
                     model=command.model,
                     context=context,
                 ),
