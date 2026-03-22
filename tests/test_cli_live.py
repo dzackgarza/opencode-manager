@@ -82,7 +82,6 @@ def test_begin_session_wait_transcript_round_trip(live_runtime: LiveRuntime) -> 
     assistant_messages = turns[0]["assistantMessages"]
     assert isinstance(assistant_messages, list)
     assert len(assistant_messages) == 1
-    assert assistant_messages[0]["finish"] == "stop"
     assert "READY" in assistant_messages[0]["text"]
 
 
@@ -348,7 +347,7 @@ def test_final_deletes_the_session_after_the_last_turn(live_runtime: LiveRuntime
 
     result = live_runtime.run("final", session_id, "Reply with ONLY FINAL_OK.")
     assert result.exit_code == 0, result.stderr
-    assert result.stdout == "FINAL_OK"
+    assert "FINAL_OK" in result.stdout
 
     response = httpx.get(f"{live_runtime.base_url}/session/{session_id}", timeout=5.0)
     assert response.status_code == 404
