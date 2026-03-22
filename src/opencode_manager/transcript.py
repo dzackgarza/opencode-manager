@@ -220,11 +220,18 @@ def _fill_missing_step_starts(steps: list[JsonDict], message: JsonDict) -> None:
     for index, step in enumerate(steps):
         if step["started_ms"] is not None:
             continue
-        previous = steps[index - 1] if index > 0 else None
-        previous_end = previous["completed_ms"] if previous is not None else None
-        previous_start = previous["started_ms"] if previous is not None else None
-        step["started_ms"] = previous_end or previous_start or _message_created_ms(message)
-        step["started_source"] = "previous step boundary" if previous else "assistant message start"
+        step["started_ms"], step["started_source"] = _fallback_step_start(steps, index, message)
+
+
+def _fallback_step_start(
+    steps: list[JsonDict], index: int, message: JsonDict
+) -> tuple[int | float | None, str]:
+    previous = steps[index - 1] if index > 0 else None
+    if previous is None:
+        return _message_created_ms(message), "assistant message start"
+    previous_end = previous["completed_ms"]
+    previous_start = previous["started_ms"]
+    return previous_end or previous_start, "previous step boundary"
 
 
 def _fill_missing_step_completions(steps: list[JsonDict], message: JsonDict) -> None:
@@ -232,33 +239,68 @@ def _fill_missing_step_completions(steps: list[JsonDict], message: JsonDict) -> 
         step = steps[index]
         if step["completed_ms"] is not None:
             continue
-        next_step = steps[index + 1] if index + 1 < len(steps) else None
-        next_start = next_step["started_ms"] if next_step is not None else None
-        next_end = next_step["completed_ms"] if next_step is not None else None
-        step["completed_ms"] = next_start or next_end or _message_completed_ms(message)
-        step["completed_source"] = (
-            "next step boundary" if next_step else "assistant message completion"
+        step["completed_ms"], step["completed_source"] = _fallback_step_completion(
+            steps,
+            index,
+            message,
         )
+
+
+def _fallback_step_completion(
+    steps: list[JsonDict], index: int, message: JsonDict
+) -> tuple[int | float | None, str]:
+    next_step = steps[index + 1] if index + 1 < len(steps) else None
+    if next_step is None:
+        return _message_completed_ms(message), "assistant message completion"
+    next_start = next_step["started_ms"]
+    next_end = next_step["completed_ms"]
+    return next_start or next_end, "next step boundary"
+
+
+def _mirror_missing_boundary(
+    step: JsonDict,
+    *,
+    target: str,
+    target_source: str,
+    other: str,
+    other_source: str,
+) -> None:
+    if step[target] is None and step[other] is not None:
+        step[target] = step[other]
+        step[target_source] = step[other_source]
+
+
+def _coerce_reversed_step_boundary(step: JsonDict) -> None:
+    started = step["started_ms"]
+    completed = step["completed_ms"]
+    if not (
+        isinstance(started, int | float)
+        and isinstance(completed, int | float)
+        and completed < started
+    ):
+        return
+    step["completed_ms"] = started
+    if not step["completed_source"]:
+        step["completed_source"] = step["started_source"]
 
 
 def _normalize_step_boundaries(steps: list[JsonDict]) -> None:
     for step in steps:
-        if step["started_ms"] is None and step["completed_ms"] is not None:
-            step["started_ms"] = step["completed_ms"]
-            step["started_source"] = step["completed_source"]
-        if step["completed_ms"] is None and step["started_ms"] is not None:
-            step["completed_ms"] = step["started_ms"]
-            step["completed_source"] = step["started_source"]
-        started = step["started_ms"]
-        completed = step["completed_ms"]
-        if (
-            isinstance(started, int | float)
-            and isinstance(completed, int | float)
-            and completed < started
-        ):
-            step["completed_ms"] = started
-            if not step["completed_source"]:
-                step["completed_source"] = step["started_source"]
+        _mirror_missing_boundary(
+            step,
+            target="started_ms",
+            target_source="started_source",
+            other="completed_ms",
+            other_source="completed_source",
+        )
+        _mirror_missing_boundary(
+            step,
+            target="completed_ms",
+            target_source="completed_source",
+            other="started_ms",
+            other_source="started_source",
+        )
+        _coerce_reversed_step_boundary(step)
 
 
 def _build_steps(message: JsonDict) -> list[JsonDict]:
@@ -344,22 +386,26 @@ def _render_step(step: JsonDict) -> JsonDict | None:
     part = step.get("part")
     if not isinstance(part, dict):
         return None
-    started_ms = step.get("started_ms")
-    completed_ms = step.get("completed_ms")
-    duration_hint_ms = step.get("duration_hint_ms")
-    duration_hint_source = step.get("duration_hint_source")
-    duration = _hinted_duration_text(
-        started_ms if isinstance(started_ms, int | float) else None,
-        completed_ms if isinstance(completed_ms, int | float) else None,
-        duration_hint_ms if isinstance(duration_hint_ms, int | float) else None,
-        duration_hint_source if isinstance(duration_hint_source, str) else None,
-    )
+    duration = _step_duration(step)
     part_type = part.get("type")
     if part_type == "tool":
         return _tool_step_payload(step, part, duration)
     if part_type in {"text", "reasoning", "patch"}:
         return _content_step_payload(step, part, duration, str(part_type))
     return None
+
+
+def _step_duration(step: JsonDict) -> str:
+    started_ms = step.get("started_ms")
+    completed_ms = step.get("completed_ms")
+    duration_hint_ms = step.get("duration_hint_ms")
+    duration_hint_source = step.get("duration_hint_source")
+    return _hinted_duration_text(
+        started_ms if isinstance(started_ms, int | float) else None,
+        completed_ms if isinstance(completed_ms, int | float) else None,
+        duration_hint_ms if isinstance(duration_hint_ms, int | float) else None,
+        duration_hint_source if isinstance(duration_hint_source, str) else None,
+    )
 
 
 def _render_assistant_message(message: JsonDict, *, index: int) -> JsonDict:

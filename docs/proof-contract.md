@@ -14,7 +14,7 @@ Its purpose is operational, not cosmetic: it provides a minimal command surface 
 - `chat --system --no-reply <session-id> <prompt>` queues an idle system message first; the next real continued turn must carry that queued system prompt into `/message`.
 - `final <session-id> <prompt>` completes the last turn and deletes the session.
 - `transcript <session-id>` renders real session exports, not fabricated fixtures.
-- `doctor` verifies config resolution, centralized sandbox wiring, and optional server reachability without mutating session state.
+- `doctor` verifies config resolution under the normal global-plus-project precedence, reports the resolved proof workspace, and optionally checks server reachability without mutating session state.
 
 ## Proof Witnesses
 

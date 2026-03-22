@@ -58,34 +58,28 @@ opencode-transcript --input tests/fixtures/transcript-multiturn.json
 - A recorded user message without a new assistant turn is not considered success for default continuation.
 - Continued turns re-send the observed agent/model identity from the live session transcript.
 - `chat --system --no-reply` records an idle queued system message, and the next continued turn carries that queued system prompt into the live `/message` request.
-- `doctor` verifies config resolution, centralized sandbox wiring, and optional server reachability.
+- `doctor` verifies config resolution under standard OpenCode precedence, reports the resolved proof workspace, and optionally checks server reachability.
 
 ## Test Runtime
 
-Live proofs are managed by the centralized workspace sandbox, not by package-local server scripts.
+Live proofs are managed by the centralized CI workflow. The repo-local `just test` contract assumes a prepared proof environment instead of creating its own sandbox.
 
 ```bash
 just test
-just --justfile ../../justfile test-sandbox-up
-source ../../.test-sandbox-env.sh
-uv run pytest
-just --justfile ../../justfile test-sandbox-down
 ```
 
 `just test` will:
 
-1. ask the top-level workspace justfile to create a fresh sandbox home/project dir and start a dedicated `opencode serve` instance on `http://127.0.0.1:4097`
-2. copy this package's test config into that sandbox before server startup
-3. source the centralized sandbox env file
-4. run the pytest suite
-5. tear the sandbox down
+1. lint and typecheck the CLI
+2. run the shared Python QC gate
+3. execute live proofs if `OPENCODE_BASE_URL` points at a managed proof server while the repo-root [`opencode.json`](/home/dzack/opencode-plugins/clis/opencode-manager/opencode.json) remains in place for standard project config discovery
 
 ## Testing Surface
 
-- Live orchestration proofs run through `just test` against the centralized sandbox.
+- Live orchestration proofs run through the centralized CI proof workflow against a clean OpenCode server.
 
 ## Verification
 
 ```bash
-just check
+just test
 ```

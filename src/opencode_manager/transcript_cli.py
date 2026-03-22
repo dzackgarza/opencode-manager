@@ -19,6 +19,14 @@ from .transcript import load_transcript_export, render_transcript_json, render_t
 app = App(name="opencode-transcript", help="Render a live or saved OpenCode transcript.")
 
 
+def _write_stdout_line(value: str) -> None:
+    sys.stdout.write(f"{value}\n")
+
+
+def _write_stderr_line(value: str) -> None:
+    sys.stderr.write(f"{value}\n")
+
+
 @app.default
 def render(
     session_id: str | None = None,
@@ -63,7 +71,7 @@ def render(
     if command.output:
         resolved = Path(command.output).resolve()
         resolved.write_text(content, encoding="utf-8")
-        print(resolved)
+        _write_stdout_line(str(resolved))
         return
     sys.stdout.write(content)
 
@@ -72,7 +80,7 @@ def main() -> None:
     try:
         app()
     except OpxError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _write_stderr_line(f"Error: {exc}")
         raise SystemExit(1) from exc
 
 

@@ -36,6 +36,34 @@ class WaitResult:
     updated_at: int | float | None
 
 
+@dataclass(frozen=True, slots=True)
+class SubmissionRequest:
+    prompt: str
+    visibility: str
+    agent: str | None = None
+    model: str | None = None
+    context: SessionContext | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSubmission:
+    request: SubmissionRequest
+    context: SessionContext
+    initial_messages: list[JsonDict]
+    payload: JsonDict
+
+    @property
+    def initial_assistant_count(self) -> int:
+        return len(assistant_texts(self.initial_messages))
+
+
+@dataclass(frozen=True, slots=True)
+class WaitConfig:
+    require_new_assistant: bool = False
+    initial_assistant_count: int = 0
+    quiet_period_sec: float = 1.5
+
+
 def parse_model_ref(model: str | None) -> JsonDict | None:
     """Parse provider/model into the wire format used by OpenCode."""
     if model is None:
@@ -135,14 +163,16 @@ def _agent_from_info(info: JsonDict) -> str | None:
     return agent_value if isinstance(agent_value, str) and agent_value else None
 
 
+def _non_empty_string(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 def _model_ref_from_info(info: JsonDict) -> str | None:
     model = info.get("model")
     if not isinstance(model, dict):
         return None
-    provider = model.get("providerID")
-    model_name = model.get("modelID")
-    provider_id = provider if isinstance(provider, str) and provider else None
-    model_id = model_name if isinstance(model_name, str) and model_name else None
+    provider_id = _non_empty_string(model.get("providerID"))
+    model_id = _non_empty_string(model.get("modelID"))
     return f"{provider_id}/{model_id}" if provider_id and model_id else None
 
 
@@ -264,60 +294,51 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     def _prepare_submission(
         self,
         session_id: str,
-        *,
-        prompt: str,
-        visibility: str,
-        agent: str | None,
-        model: str | None,
-        context: SessionContext | None,
-    ) -> tuple[SessionContext, list[JsonDict], JsonDict]:
+        request: SubmissionRequest,
+    ) -> PreparedSubmission:
         """Validate, resolve context, fetch history, and build the prompt payload."""
+        self._validate_visibility(request.visibility)
+        context = request.context or self.session_context(session_id)
+        messages = self.list_messages(session_id, context=context)
+        payload = self._payload_for_submission(
+            request=request,
+            messages=messages,
+        )
+        return PreparedSubmission(
+            request=request,
+            context=context,
+            initial_messages=messages,
+            payload=payload,
+        )
+
+    @staticmethod
+    def _validate_visibility(visibility: str) -> None:
         if visibility not in {"chat", "system"}:
             raise PromptDeliveryError(f"Unsupported prompt visibility: {visibility}")
-        ctx = context or self.session_context(session_id)
-        messages = self.list_messages(session_id, context=ctx)
-        payload = self._payload_for_submission(
-            prompt=prompt, visibility=visibility, messages=messages, agent=agent, model=model
-        )
-        return ctx, messages, payload
 
     def submit_prompt(
         self,
         session_id: str,
+        request: SubmissionRequest,
         *,
-        prompt: str,
-        visibility: str,
         no_reply: bool = False,
-        agent: str | None = None,
-        model: str | None = None,
-        context: SessionContext | None = None,
     ) -> PromptResult:
         """Submit a workflow prompt and verify the intended transport semantics."""
-        ctx, messages, payload = self._prepare_submission(
-            session_id, prompt=prompt, visibility=visibility,
-            agent=agent, model=model, context=context,
-        )
+        submission = self._prepare_submission(session_id, request)
         if no_reply:
-            return self._queue_prompt(
-                session_id, prompt=prompt, visibility=visibility,
-                context=ctx, initial_messages=messages, payload=payload,
-            )
-        return self._continue_prompt(
-            session_id, visibility=visibility, context=ctx,
-            payload=payload, initial_assistant_count=len(assistant_texts(messages)),
-        )
+            return self._queue_prompt(session_id, submission)
+        return self._continue_prompt(session_id, submission)
 
     def wait_until_idle(
         self,
         session_id: str,
         *,
         timeout_sec: float = 180.0,
-        require_new_assistant: bool = False,
-        initial_assistant_count: int = 0,
+        wait: WaitConfig | None = None,
         context: SessionContext | None = None,
-        quiet_period_sec: float = 1.5,
     ) -> WaitResult:
         """Wait until a session stops mutating for a short quiet period."""
+        wait = wait or WaitConfig()
         context = context or self.session_context(session_id)
         deadline = time.monotonic() + timeout_sec
         previous_signature: tuple[object, ...] | None = None
@@ -335,10 +356,8 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
                 session_id=session_id,
                 messages=messages,
                 updated_at=latest_updated_at,
-                require_new_assistant=require_new_assistant,
-                initial_assistant_count=initial_assistant_count,
+                wait=wait,
                 stable_since=stable_since,
-                quiet_period_sec=quiet_period_sec,
             )
             if result is not None:
                 return result
@@ -351,51 +370,49 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     def _wait_for_prompt_recording(
         self,
         session_id: str,
+        submission: PreparedSubmission,
         *,
-        context: SessionContext,
-        initial_count: int,
-        prompt: str,
-        visibility: str,
         timeout_sec: float = 10.0,
     ) -> None:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
-            messages = self.list_messages(session_id, context=context)
-            if len(messages) <= initial_count:
+            messages = self.list_messages(session_id, context=submission.context)
+            if len(messages) <= len(submission.initial_messages):
                 time.sleep(0.2)
                 continue
-            new_messages = messages[initial_count:]
+            new_messages = messages[len(submission.initial_messages) :]
             if any(
-                self._matches_recorded_prompt(message, prompt, visibility)
+                self._matches_recorded_prompt(
+                    message,
+                    submission.request.prompt,
+                    submission.request.visibility,
+                )
                 for message in new_messages
             ):
                 return
             time.sleep(0.2)
         raise PromptDeliveryError(
-            f"Queue-only {visibility} prompt for {session_id} was not recorded "
+            f"Queue-only {submission.request.visibility} prompt for {session_id} was not recorded "
             f"in session state within {timeout_sec:.0f}s."
         )
 
     def _payload_for_submission(
         self,
+        request: SubmissionRequest,
         *,
-        prompt: str,
-        visibility: str,
         messages: list[JsonDict],
-        agent: str | None,
-        model: str | None,
     ) -> JsonDict:
         derived_agent, derived_model = observed_identity(messages)
         payload = self._prompt_payload(
-            prompt=prompt,
-            visibility=visibility,
-            agent=agent or derived_agent,
-            model=model or derived_model,
+            prompt=request.prompt,
+            visibility=request.visibility,
+            agent=request.agent or derived_agent,
+            model=request.model or derived_model,
         )
         queued_systems = pending_system_prompts(messages)
         return self._apply_pending_system_prompts(
             payload=payload,
-            visibility=visibility,
+            visibility=request.visibility,
             queued_systems=queued_systems,
         )
 
@@ -431,28 +448,21 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     def _queue_prompt(
         self,
         session_id: str,
-        *,
-        prompt: str,
-        visibility: str,
-        context: SessionContext,
-        initial_messages: list[JsonDict],
-        payload: JsonDict,
+        submission: PreparedSubmission,
     ) -> PromptResult:
-        LOG.info("queue-only prompt %s visibility=%s", session_id, visibility)
-        payload["noReply"] = True
+        LOG.info(
+            "queue-only prompt %s visibility=%s",
+            session_id,
+            submission.request.visibility,
+        )
+        submission.payload["noReply"] = True
         response = self._http.post(
             f"/session/{session_id}/prompt_async",
-            headers=session_headers(context, content_type="application/json"),
-            json=payload,
+            headers=session_headers(submission.context, content_type="application/json"),
+            json=submission.payload,
         )
         response.raise_for_status()
-        self._wait_for_prompt_recording(
-            session_id,
-            context=context,
-            initial_count=len(initial_messages),
-            prompt=prompt,
-            visibility=visibility,
-        )
+        self._wait_for_prompt_recording(session_id, submission)
         return PromptResult(assistant_message=None, session_id=session_id)
 
     def _post_message_stream(
@@ -477,19 +487,23 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     def _continue_prompt(
         self,
         session_id: str,
-        *,
-        visibility: str,
-        context: SessionContext,
-        payload: JsonDict,
-        initial_assistant_count: int,
+        submission: PreparedSubmission,
     ) -> PromptResult:
+        visibility = submission.request.visibility
         LOG.info("continued prompt %s visibility=%s", session_id, visibility)
-        with self._post_message_stream(session_id, context=context, payload=payload) as response:
+        with self._post_message_stream(
+            session_id,
+            context=submission.context,
+            payload=submission.payload,
+        ) as response:
             response.raise_for_status()
             self._consume_stream(response.iter_lines())
 
-        messages = self.list_messages(session_id, context=context)
-        assistant_message = latest_assistant_text_since(messages, initial_assistant_count)
+        messages = self.list_messages(session_id, context=submission.context)
+        assistant_message = latest_assistant_text_since(
+            messages,
+            submission.initial_assistant_count,
+        )
         if assistant_message is None:
             raise PromptDeliveryError(
                 f"Session {session_id} accepted a continued {visibility} prompt "
@@ -520,22 +534,17 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     def submit_prompt_no_wait(
         self,
         session_id: str,
-        *,
-        prompt: str,
-        visibility: str,
-        agent: str | None = None,
-        model: str | None = None,
-        context: SessionContext | None = None,
+        request: SubmissionRequest,
     ) -> PromptResult:
         """Submit a prompt to start an agent turn without waiting for a text response.
 
         Use wait_until_idle() afterward to block until the full turn is complete."""
-        ctx, _, payload = self._prepare_submission(
-            session_id, prompt=prompt, visibility=visibility,
-            agent=agent, model=model, context=context,
-        )
+        submission = self._prepare_submission(session_id, request)
         return self._submit_detached(
-            session_id, visibility=visibility, context=ctx, payload=payload
+            session_id,
+            visibility=submission.request.visibility,
+            context=submission.context,
+            payload=submission.payload,
         )
 
     def _wait_snapshot(
@@ -552,27 +561,21 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         session_id: str,
         messages: list[JsonDict],
         updated_at: int | float | None,
-        require_new_assistant: bool,
-        initial_assistant_count: int,
+        wait: WaitConfig,
         stable_since: float,
-        quiet_period_sec: float,
     ) -> WaitResult | None:
-        assistant_message = (
-            latest_assistant_text_since(messages, initial_assistant_count)
-            if require_new_assistant
-            else latest_assistant_text(messages)
-        )
-        if not require_new_assistant and not has_pending_prompt(messages):
+        assistant_message = self._assistant_message_for_wait(messages, wait)
+        if not wait.require_new_assistant and not has_pending_prompt(messages):
             return WaitResult(
                 assistant_message=assistant_message,
                 session_id=session_id,
                 stable_for_seconds=0.0,
                 updated_at=updated_at,
             )
-        if require_new_assistant and assistant_message is None:
+        if wait.require_new_assistant and assistant_message is None:
             return None
         stable_for = time.monotonic() - stable_since
-        if stable_for < quiet_period_sec:
+        if stable_for < wait.quiet_period_sec:
             return None
         return WaitResult(
             assistant_message=assistant_message,
@@ -580,6 +583,12 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
             stable_for_seconds=stable_for,
             updated_at=updated_at,
         )
+
+    @staticmethod
+    def _assistant_message_for_wait(messages: list[JsonDict], wait: WaitConfig) -> str | None:
+        if wait.require_new_assistant:
+            return latest_assistant_text_since(messages, wait.initial_assistant_count)
+        return latest_assistant_text(messages)
 
     @staticmethod
     def _consume_stream(lines: Iterator[str]) -> None:

@@ -14,7 +14,13 @@ from typing import Annotated
 import httpx
 from cyclopts import App, Parameter
 
-from .client import OpenCodeManagerClient, assistant_texts, latest_message_role
+from .client import (
+    OpenCodeManagerClient,
+    SubmissionRequest,
+    WaitConfig,
+    assistant_texts,
+    latest_message_role,
+)
 from .config import auth_headers, base_url, default_session_context
 from .contracts import (
     BeginSessionCommand,
@@ -57,56 +63,57 @@ def _session_handle(session: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _package_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+def _write_stdout_line(value: str) -> None:
+    sys.stdout.write(f"{value}\n")
 
 
-def _sandbox_env_candidates() -> list[Path]:
-    explicit = os.environ.get("OPX_SANDBOX_ENV", "").strip()
-    if explicit:
-        return [Path(explicit).expanduser().resolve()]
-
-    seen: set[Path] = set()
-    candidates: list[Path] = []
-    roots = [Path.cwd(), _package_root()]
-    for root in roots:
-        for parent in (root, *root.parents):
-            candidate = parent / ".test-sandbox-env.sh"
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            candidates.append(candidate)
-    return candidates
+def _write_stderr_line(value: str) -> None:
+    sys.stderr.write(f"{value}\n")
 
 
-def _sandbox_env_path() -> Path | None:
-    for candidate in _sandbox_env_candidates():
+def _project_config_path(start: Path | None = None) -> Path | None:
+    current = (start or Path.cwd()).expanduser().resolve()
+    while True:
+        candidate = current / "opencode.json"
         if candidate.is_file():
             return candidate
-    return None
+        if (current / ".git").exists() or current.parent == current:
+            return None
+        current = current.parent
 
 
-def _resolved_config_path() -> Path:
-    explicit = os.environ.get("OPENCODE_CONFIG", "").strip()
-    if explicit:
-        return Path(explicit).expanduser().resolve()
+def _proof_workspace_path(start: Path | None = None) -> Path:
+    project_config = _project_config_path(start)
+    if project_config is not None:
+        return project_config.parent
+    return (start or Path.cwd()).expanduser().resolve()
+
+
+def _global_config_path() -> Path:
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
     if xdg_config_home:
         return Path(xdg_config_home).expanduser().resolve() / "opencode" / "opencode.json"
     return Path.home() / ".config" / "opencode" / "opencode.json"
 
 
+def _resolved_config_path(start: Path | None = None) -> tuple[str, Path]:
+    project_config = _project_config_path(start)
+    if project_config is not None:
+        return "project", project_config
+    explicit = os.environ.get("OPENCODE_CONFIG", "").strip()
+    if explicit:
+        return "custom", Path(explicit).expanduser().resolve()
+    return "global", _global_config_path()
+
+
 def _doctor_checks(
-    resolved_base_url: str, config_path: Path, sandbox_env_path: Path | None
+    resolved_base_url: str, config_origin: str, config_path: Path, proof_workspace: Path
 ) -> list[DoctorCheck]:
-    sandbox_detail = (
-        f"Centralized sandbox env file exists at {sandbox_env_path}."
-        if sandbox_env_path is not None
-        else (
-            "Centralized sandbox env file was not found via "
-            "OPX_SANDBOX_ENV or parent-directory search."
-        )
-    )
+    config_label = {
+        "project": "project",
+        "custom": "custom override",
+        "global": "global",
+    }[config_origin]
     return [
         DoctorCheck(
             name="base_url",
@@ -117,12 +124,16 @@ def _doctor_checks(
             name="config_path",
             ok=config_path.is_file(),
             detail=(
-                f"Resolved OpenCode config at {config_path}."
+                f"Resolved {config_label} OpenCode config at {config_path}."
                 if config_path.is_file()
-                else f"Resolved OpenCode config is missing: {config_path}."
+                else f"Resolved {config_label} OpenCode config is missing: {config_path}."
             ),
         ),
-        DoctorCheck(name="sandbox_env", ok=sandbox_env_path is not None, detail=sandbox_detail),
+        DoctorCheck(
+            name="proof_workspace",
+            ok=proof_workspace.is_dir(),
+            detail=f"Proof workspace resolves to {proof_workspace}.",
+        ),
     ]
 
 
@@ -155,17 +166,19 @@ def _server_checks(command: DoctorCommand, resolved_base_url: str) -> list[Docto
 
 
 def _doctor_report(command: DoctorCommand) -> DoctorReport:
+    cwd = Path.cwd().resolve()
     resolved_base_url = validate_base_url(base_url())
-    config_path = _resolved_config_path()
-    sandbox_env_path = _sandbox_env_path()
-    checks = _doctor_checks(resolved_base_url, config_path, sandbox_env_path)
+    config_origin, config_path = _resolved_config_path(cwd)
+    proof_workspace = _proof_workspace_path(cwd)
+    checks = _doctor_checks(resolved_base_url, config_origin, config_path, proof_workspace)
     checks.extend(_server_checks(command, resolved_base_url))
 
     return DoctorReport(
         base_url=resolved_base_url,
-        cwd=str(Path.cwd()),
+        cwd=str(cwd),
+        config_origin=config_origin,
         config_path=str(config_path),
-        sandbox_env_path=str(sandbox_env_path),
+        proof_workspace=str(proof_workspace),
         checks=checks,
     )
 
@@ -198,7 +211,7 @@ def _write_transcript_output(content: str, *, output: str | None, tee_temp: bool
     if output:
         resolved = Path(output).resolve()
         resolved.write_text(content, encoding="utf-8")
-        print(resolved)
+        _write_stdout_line(str(resolved))
         return
 
     sys.stdout.write(content)
@@ -228,16 +241,17 @@ def one_shot(
         try:
             client.submit_prompt_no_wait(
                 session_id,
-                prompt=command.prompt,
-                visibility="chat",
-                agent=command.agent,
-                model=command.model,
-                context=context,
+                SubmissionRequest(
+                    prompt=command.prompt,
+                    visibility="chat",
+                    agent=command.agent,
+                    model=command.model,
+                    context=context,
+                ),
             )
             wait_result = client.wait_until_idle(
                 session_id,
-                require_new_assistant=True,
-                initial_assistant_count=0,
+                wait=WaitConfig(require_new_assistant=True),
                 context=context,
             )
             if command.transcript:
@@ -247,7 +261,7 @@ def one_shot(
                 raise OpxError(
                     f"No assistant reply was recorded for one-shot session {session_id}."
                 )
-            print(wait_result.assistant_message)
+            _write_stdout_line(wait_result.assistant_message)
         finally:
             client.delete_session(session_id, context=context)
 
@@ -271,20 +285,22 @@ def begin_session(
         try:
             client.submit_prompt_no_wait(
                 session_id,
-                prompt=command.prompt,
-                visibility="chat",
-                agent=command.agent,
-                model=command.model,
-                context=context,
+                SubmissionRequest(
+                    prompt=command.prompt,
+                    visibility="chat",
+                    agent=command.agent,
+                    model=command.model,
+                    context=context,
+                ),
             )
         except Exception:
             client.delete_session(session_id, context=context)
             raise
 
         if command.json_output:
-            print(json_lib.dumps(_session_handle(session), indent=2))
+            _write_stdout_line(json_lib.dumps(_session_handle(session), indent=2))
             return
-        print(session_id)
+        _write_stdout_line(session_id)
 
 
 def _continued_prompt(
@@ -307,12 +323,14 @@ def _continued_prompt(
     with OpenCodeManagerClient() as client:
         result = client.submit_prompt(
             command.session_id,
-            prompt=command.prompt,
-            visibility=command.visibility,
+            SubmissionRequest(
+                prompt=command.prompt,
+                visibility=command.visibility,
+            ),
             no_reply=command.no_reply,
         )
         if command.json_output:
-            print(
+            _write_stdout_line(
                 json_lib.dumps(
                     {
                         "assistantMessage": result.assistant_message,
@@ -325,9 +343,9 @@ def _continued_prompt(
             )
             return
         if result.assistant_message:
-            print(result.assistant_message)
+            _write_stdout_line(result.assistant_message)
             return
-        print(session_id)
+        _write_stdout_line(session_id)
 
 
 @app.command
@@ -371,7 +389,7 @@ def wait(session_id: str, *, json: bool = False, timeout_sec: float = 180.0) -> 
         result = client.wait_until_idle(
             command.session_id,
             timeout_sec=command.timeout_sec,
-            initial_assistant_count=initial_assistant_count,
+            wait=WaitConfig(initial_assistant_count=initial_assistant_count),
         )
         final_messages = client.list_messages(command.session_id)
         new_assistant_message = None
@@ -381,7 +399,7 @@ def wait(session_id: str, *, json: bool = False, timeout_sec: float = 180.0) -> 
             texts = assistant_texts(final_messages)
             new_assistant_message = texts[-1] if texts else None
         if command.json_output:
-            print(
+            _write_stdout_line(
                 json_lib.dumps(
                     {
                         "assistantMessage": new_assistant_message,
@@ -394,9 +412,9 @@ def wait(session_id: str, *, json: bool = False, timeout_sec: float = 180.0) -> 
             )
             return
         if new_assistant_message:
-            print(new_assistant_message)
+            _write_stdout_line(new_assistant_message)
             return
-        print(f"Session {command.session_id} is idle.")
+        _write_stdout_line(f"Session {command.session_id} is idle.")
 
 
 @app.command
@@ -442,9 +460,11 @@ def final(
         try:
             client.submit_prompt(
                 command.session_id,
-                prompt=command.prompt,
-                visibility="chat",
-                context=context,
+                SubmissionRequest(
+                    prompt=command.prompt,
+                    visibility="chat",
+                    context=context,
+                ),
             )
             if command.transcript:
                 sys.stdout.write(_render_live_transcript(client, command.session_id, as_json=False))
@@ -455,7 +475,7 @@ def final(
                 raise OpxError(
                     f"No assistant reply was recorded before deleting session {command.session_id}."
                 )
-            print(assistant_message[-1])
+            _write_stdout_line(assistant_message[-1])
         finally:
             client.delete_session(command.session_id, context=context)
 
@@ -466,7 +486,7 @@ def delete(session_id: str) -> None:
     command = DeleteCommand.model_validate({"session_id": session_id})
     with OpenCodeManagerClient() as client:
         client.delete_session(command.session_id)
-    print(command.session_id)
+    _write_stdout_line(command.session_id)
 
 
 @app.command
@@ -486,15 +506,16 @@ def doctor(
     )
     report = _doctor_report(command)
     if command.json_output:
-        print(json_lib.dumps(report.as_json(), indent=2))
+        _write_stdout_line(json_lib.dumps(report.as_json(), indent=2))
     else:
-        print(f"base-url: {report.base_url}")
-        print(f"cwd: {report.cwd}")
-        print(f"config-path: {report.config_path}")
-        print(f"sandbox-env-path: {report.sandbox_env_path or 'not found'}")
+        _write_stdout_line(f"base-url: {report.base_url}")
+        _write_stdout_line(f"cwd: {report.cwd}")
+        _write_stdout_line(f"config-origin: {report.config_origin}")
+        _write_stdout_line(f"config-path: {report.config_path}")
+        _write_stdout_line(f"proof-workspace: {report.proof_workspace}")
         for check in report.checks:
             status = "ok" if check.ok else "fail"
-            print(f"{status}: {check.name}: {check.detail}")
+            _write_stdout_line(f"{status}: {check.name}: {check.detail}")
     if not report.ok:
         raise OpxError("Doctor found one or more setup problems.")
 
@@ -504,7 +525,7 @@ def main() -> None:
     try:
         app()
     except OpxError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _write_stderr_line(f"Error: {exc}")
         raise SystemExit(1) from exc
 
 

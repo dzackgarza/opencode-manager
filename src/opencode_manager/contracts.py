@@ -192,8 +192,9 @@ class DoctorCheck(StrictModel):
 class DoctorReport(StrictModel):
     base_url: str
     cwd: str
+    config_origin: str
     config_path: str
-    sandbox_env_path: str | None
+    proof_workspace: str
     checks: list[DoctorCheck]
 
     @property

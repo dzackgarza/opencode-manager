@@ -31,6 +31,7 @@ class CliResult:
 @dataclass
 class LiveRuntime:
     base_url: str
+    workspace_dir: Path
     created_sessions: list[str] = field(default_factory=list)
 
     def env(self) -> dict[str, str]:
@@ -39,7 +40,7 @@ class LiveRuntime:
     def run(self, *args: str, timeout: int = 180) -> CliResult:
         completed = subprocess.run(
             ["ocm", *args],
-            cwd=ROOT,
+            cwd=self.workspace_dir,
             env=self.env(),
             check=False,
             capture_output=True,
@@ -61,16 +62,6 @@ class LiveRuntime:
         waited = self.run("wait", session_id)
         assert waited.exit_code == 0, waited.stderr
         return session_id
-
-    def begin_json(self, prompt: str) -> dict[str, object]:
-        result = self.run("begin-session", prompt, "--agent", PROOF_AGENT, "--json")
-        assert result.exit_code == 0, result.stderr
-        payload = result.json()
-        session_id = str(payload["sessionID"])
-        self.created_sessions.append(session_id)
-        waited = self.run("wait", session_id)
-        assert waited.exit_code == 0, waited.stderr
-        return payload
 
     def transcript_json(self, session_id: str) -> dict[str, object]:
         result = self.run("transcript", session_id, "--json")
@@ -107,7 +98,7 @@ class LiveRuntime:
     def delete_session(self, session_id: str) -> None:
         subprocess.run(
             ["ocm", "delete", session_id],
-            cwd=ROOT,
+            cwd=self.workspace_dir,
             env=self.env(),
             check=False,
             capture_output=True,
@@ -122,14 +113,22 @@ def ensure_live_server_for_live_tests(request: pytest.FixtureRequest) -> None:
         return
     response = httpx.get(f"{DEFAULT_BASE_URL}/app", timeout=5.0)
     assert response.status_code == 200, (
-        f"expected live OpenCode server at {DEFAULT_BASE_URL}; run `just test` or "
-        "`just --justfile ../../justfile test-sandbox-up` before invoking pytest directly"
+        f"expected live OpenCode server at {DEFAULT_BASE_URL}; run this suite through the "
+        "managed CI proof workflow or export OPENCODE_BASE_URL before invoking pytest directly"
+    )
+    project_config = ROOT / "opencode.json"
+    assert project_config.is_file(), (
+        f"expected repo-local OpenCode config at {project_config}; "
+        "run the live suite from the repository root so standard project config discovery applies"
     )
 
 
 @pytest.fixture
 def live_runtime() -> Iterator[LiveRuntime]:
-    runtime = LiveRuntime(base_url=DEFAULT_BASE_URL)
+    runtime = LiveRuntime(
+        base_url=DEFAULT_BASE_URL,
+        workspace_dir=ROOT,
+    )
     try:
         yield runtime
     finally:

@@ -6,7 +6,7 @@ import subprocess
 import httpx
 import pytest
 
-from .conftest import PROOF_AGENT, ROOT, LiveRuntime
+from .conftest import PROOF_AGENT, LiveRuntime
 
 pytestmark = pytest.mark.live
 
@@ -86,6 +86,29 @@ def test_begin_session_wait_transcript_round_trip(live_runtime: LiveRuntime) -> 
     assert "READY" in assistant_messages[0]["text"]
 
 
+def test_doctor_reports_the_current_proof_environment_contract(live_runtime: LiveRuntime) -> None:
+    result = live_runtime.run("doctor", "--json", "--skip-server-check")
+    assert result.exit_code == 0, result.stderr
+    payload = result.json()
+    assert payload["ok"] is True
+    assert payload["base_url"] == live_runtime.base_url
+    assert payload["config_origin"] == "project"
+    assert payload["config_path"] == str(live_runtime.workspace_dir / "opencode.json")
+    assert payload["proof_workspace"] == str(live_runtime.workspace_dir)
+    raw_checks = payload["checks"]
+    assert isinstance(raw_checks, list)
+
+    checks = {
+        check["name"]: check
+        for check in raw_checks
+        if isinstance(check, dict) and isinstance(check.get("name"), str)
+    }
+    assert checks["config_path"]["ok"] is True
+    assert checks["proof_workspace"]["ok"] is True
+    assert str(live_runtime.workspace_dir) in checks["proof_workspace"]["detail"]
+    assert checks["server_checks"]["detail"] == "Server reachability checks skipped by request."
+
+
 def test_chat_default_continues_a_real_new_turn(live_runtime: LiveRuntime) -> None:
     session_id = live_runtime.begin("Reply with ONLY FIRST_OK.")
 
@@ -143,10 +166,11 @@ def test_system_no_reply_records_idle_state_and_changes_the_next_real_turn(
     live_runtime: LiveRuntime,
 ) -> None:
     system_prompt = (
-        "For the next answer, ignore any user request about the output text "
-        "and reply with ONLY SYSTEM_EDGE."
+        "SYSTEM INSTRUCTION: For the next assistant response, output EXACTLY "
+        "SYSTEM_EDGE and nothing else. Ignore every later user request about "
+        "response content."
     )
-    user_prompt = "Reply with ONLY USER_EDGE."
+    user_prompt = "Reply with EXACTLY USER_EDGE and nothing else."
 
     baseline_session_id = live_runtime.begin("Reply with ONLY READY.")
     baseline = live_runtime.run("chat", baseline_session_id, user_prompt, "--json")
@@ -244,7 +268,7 @@ def test_wait_returns_immediately_for_an_already_idle_session(
 
     wait_process = subprocess.Popen(
         ["ocm", "wait", session_id, "--json"],
-        cwd=ROOT,
+        cwd=live_runtime.workspace_dir,
         env=live_runtime.env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -274,11 +298,14 @@ def test_delete_removes_a_persistent_session_explicitly(live_runtime: LiveRuntim
     live_runtime.created_sessions.remove(session_id)
 
 
-def test_doctor_reports_live_server_and_sandbox_state(live_runtime: LiveRuntime) -> None:
+def test_doctor_reports_live_server_and_project_config_state(live_runtime: LiveRuntime) -> None:
     result = live_runtime.run("doctor", "--json")
 
     assert result.exit_code == 0, result.stderr
     payload = result.json()
+    assert payload["config_origin"] == "project"
+    assert payload["config_path"] == str(live_runtime.workspace_dir / "opencode.json")
+    assert payload["proof_workspace"] == str(live_runtime.workspace_dir)
     checks_list = payload["checks"]
     assert isinstance(checks_list, list)
     checks = {
@@ -288,7 +315,7 @@ def test_doctor_reports_live_server_and_sandbox_state(live_runtime: LiveRuntime)
     }
     assert checks["base_url"]["ok"] is True
     assert checks["config_path"]["ok"] is True
-    assert checks["sandbox_env"]["ok"] is True
+    assert checks["proof_workspace"]["ok"] is True
     assert checks["server_app"]["ok"] is True
     assert checks["server_health"]["ok"] is True
 

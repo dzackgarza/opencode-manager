@@ -1,0 +1,14 @@
+name: CI
+'on':
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+jobs:
+  check:
+    uses: dzackgarza/opencode-plugins/.github/workflows/python-cli-ci.yml@main
+    with:
+      use_opencode_server: true
+    secrets: inherit
