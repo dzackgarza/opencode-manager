@@ -519,16 +519,18 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         context: SessionContext,
         payload: JsonDict,
     ) -> PromptResult:
-        """POST prompt to start an agent turn; detach immediately without waiting for text.
+        """Queue a prompt for async execution and return immediately.
 
         The inference continues server-side. Caller must use wait_until_idle() to
         determine when the turn is complete.
         """
         LOG.info("detached prompt submission %s visibility=%s", session_id, visibility)
-        with self._post_message_stream(session_id, context=context, payload=payload) as response:
-            response.raise_for_status()
-            # Intentionally do not consume the stream — confirm HTTP acceptance only.
-            # The server continues inference asynchronously.
+        response = self._http.post(
+            f"/session/{session_id}/prompt_async",
+            headers=session_headers(context, content_type="application/json"),
+            json=payload,
+        )
+        response.raise_for_status()
         return PromptResult(assistant_message=None, session_id=session_id)
 
     def submit_prompt_no_wait(

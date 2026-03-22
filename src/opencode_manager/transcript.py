@@ -229,8 +229,8 @@ def _fallback_step_start(
     previous = steps[index - 1] if index > 0 else None
     if previous is None:
         return _message_created_ms(message), "assistant message start"
-    previous_end = previous["completed_ms"]
-    previous_start = previous["started_ms"]
+    previous_end = _as_number(previous.get("completed_ms"))
+    previous_start = _as_number(previous.get("started_ms"))
     return previous_end or previous_start, "previous step boundary"
 
 
@@ -252,8 +252,8 @@ def _fallback_step_completion(
     next_step = steps[index + 1] if index + 1 < len(steps) else None
     if next_step is None:
         return _message_completed_ms(message), "assistant message completion"
-    next_start = next_step["started_ms"]
-    next_end = next_step["completed_ms"]
+    next_start = _as_number(next_step.get("started_ms"))
+    next_end = _as_number(next_step.get("completed_ms"))
     return next_start or next_end, "next step boundary"
 
 
