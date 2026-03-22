@@ -702,7 +702,7 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         finish = info.get("finish") if isinstance(info, dict) else None
         latest_parts = latest.get("parts")
         latest_text = flatten_text(latest_parts) if isinstance(latest_parts, list) else ""
-        return (updated_at, len(messages), role, finish, latest_text)
+        return (len(messages), role, finish, latest_text)
 
     @staticmethod
     def _matches_chat_prompt(message: JsonDict, prompt: str) -> bool:

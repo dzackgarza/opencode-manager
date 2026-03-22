@@ -193,3 +193,28 @@ def test_wait_detects_a_new_incomplete_assistant_turn() -> None:
         )
         is False
     )
+
+
+def test_idle_signature_ignores_session_updated_at_noise() -> None:
+    messages = cast(
+        list[dict[str, object]],
+        [
+            {
+                "info": {"role": "user"},
+                "parts": [{"type": "text", "text": "Reply with ONLY READY."}],
+            },
+            {
+                "info": {
+                    "role": "assistant",
+                    "finish": "stop",
+                    "time": {"created": 1774182399739, "completed": 1774182405468},
+                },
+                "parts": [{"type": "text", "text": "READY"}],
+            },
+        ],
+    )
+
+    first = OpenCodeManagerClient._idle_signature(1000, messages)
+    second = OpenCodeManagerClient._idle_signature(1001, messages)
+
+    assert first == second
