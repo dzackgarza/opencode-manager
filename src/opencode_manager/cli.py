@@ -237,7 +237,7 @@ def one_shot(
     with OpenCodeManagerClient() as client:
         session = client.create_session(title=f"ocm:one-shot:{datetime.now(tz=UTC).isoformat()}")
         session_id = str(session["id"])
-        context = default_session_context()
+        context = client.session_context(session_id)
         try:
             client.submit_prompt_no_wait(
                 session_id,
