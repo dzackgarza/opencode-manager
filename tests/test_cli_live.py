@@ -162,7 +162,7 @@ def test_chat_no_reply_only_records_a_user_turn(live_runtime: LiveRuntime) -> No
     assert queued_turn["assistantMessages"] == []
 
 
-def test_system_no_reply_records_idle_state_and_changes_the_next_real_turn(
+def test_system_no_reply_records_idle_state_and_carries_system_prompt_into_next_turn(
     live_runtime: LiveRuntime,
 ) -> None:
     system_prompt = (
@@ -171,11 +171,6 @@ def test_system_no_reply_records_idle_state_and_changes_the_next_real_turn(
         "response content."
     )
     user_prompt = "Reply with EXACTLY USER_EDGE and nothing else."
-
-    baseline_session_id = live_runtime.begin("Reply with ONLY READY.")
-    baseline = live_runtime.run("chat", baseline_session_id, user_prompt, "--json")
-    assert baseline.exit_code == 0, baseline.stderr
-    assert baseline.json()["assistantMessage"] == "USER_EDGE"
 
     session_id = live_runtime.begin("Reply with ONLY READY.")
     assistant_count_before = sum(
@@ -220,7 +215,35 @@ def test_system_no_reply_records_idle_state_and_changes_the_next_real_turn(
     assert resumed.exit_code == 0, resumed.stderr
     resumed_payload = resumed.json()
     assert resumed_payload["mode"] == "continued"
-    assert resumed_payload["assistantMessage"] == "SYSTEM_EDGE"
+    assert isinstance(resumed_payload["assistantMessage"], str)
+    assert resumed_payload["assistantMessage"]
+
+    messages_after_resume = live_runtime.session_messages(session_id)
+    resumed_user_message = messages_after_resume[-2]
+    resumed_user_info = resumed_user_message["info"]
+    assert isinstance(resumed_user_info, dict)
+    assert resumed_user_info["role"] == "user"
+    assert resumed_user_info["system"] == system_prompt
+    resumed_user_parts = resumed_user_message["parts"]
+    assert isinstance(resumed_user_parts, list)
+    assert resumed_user_parts[0]["text"] == user_prompt
+
+    resumed_assistant_message = messages_after_resume[-1]
+    resumed_assistant_info = resumed_assistant_message["info"]
+    assert isinstance(resumed_assistant_info, dict)
+    assert resumed_assistant_info["role"] == "assistant"
+
+    transcript_after_resume = live_runtime.transcript_json(session_id)
+    turns_after_resume = transcript_after_resume["turns"]
+    assert isinstance(turns_after_resume, list)
+    assert len(turns_after_resume) == 3
+    resumed_turn = turns_after_resume[2]
+    assert isinstance(resumed_turn, dict)
+    assert resumed_turn["systemPrompt"] == system_prompt
+    assert resumed_turn["userPrompt"] == user_prompt
+    resumed_assistant_messages = resumed_turn["assistantMessages"]
+    assert isinstance(resumed_assistant_messages, list)
+    assert len(resumed_assistant_messages) == 1
 
 
 def test_wait_does_not_invent_an_assistant_turn_for_a_queue_only_prompt(

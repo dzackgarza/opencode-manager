@@ -239,7 +239,7 @@ def one_shot(
         session_id = str(session["id"])
         context = default_session_context()
         try:
-            client.submit_prompt_no_wait(
+            result = client.submit_prompt(
                 session_id,
                 SubmissionRequest(
                     prompt=command.prompt,
@@ -249,19 +249,14 @@ def one_shot(
                     context=context,
                 ),
             )
-            wait_result = client.wait_until_idle(
-                session_id,
-                wait=WaitConfig(require_new_assistant=True),
-                context=context,
-            )
             if command.transcript:
                 sys.stdout.write(_render_live_transcript(client, session_id, as_json=False))
                 return
-            if not wait_result.assistant_message:
+            if not result.assistant_message:
                 raise OpxError(
                     f"No assistant reply was recorded for one-shot session {session_id}."
                 )
-            _write_stdout_line(wait_result.assistant_message)
+            _write_stdout_line(result.assistant_message)
         finally:
             client.delete_session(session_id, context=context)
 

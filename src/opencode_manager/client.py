@@ -113,6 +113,17 @@ def assistant_texts(messages: list[JsonDict]) -> list[str]:
     return output
 
 
+def assistant_messages(messages: list[JsonDict]) -> list[JsonDict]:
+    """Return assistant messages in transcript order."""
+    output: list[JsonDict] = []
+    for message in messages:
+        info = message.get("info")
+        if not isinstance(info, dict) or info.get("role") != "assistant":
+            continue
+        output.append(message)
+    return output
+
+
 def latest_assistant_text(messages: list[JsonDict]) -> str | None:
     """Return the latest assistant text if present."""
     texts = assistant_texts(messages)
@@ -125,6 +136,37 @@ def latest_assistant_text_since(
     """Return the latest assistant text recorded after the given starting point."""
     new_texts = assistant_texts(messages)[initial_assistant_count:]
     return new_texts[-1] if new_texts else None
+
+
+def latest_assistant_message(messages: list[JsonDict]) -> JsonDict | None:
+    """Return the latest assistant message if present."""
+    assistants = assistant_messages(messages)
+    return assistants[-1] if assistants else None
+
+
+def _assistant_message_finished(message: JsonDict) -> bool:
+    info = message.get("info")
+    if not isinstance(info, dict):
+        return False
+    timing = info.get("time")
+    if isinstance(timing, dict) and isinstance(timing.get("completed"), int | float):
+        return True
+    finish = info.get("finish")
+    return isinstance(finish, str) and bool(finish.strip())
+
+
+def _assistant_message_has_step_finish(message: JsonDict) -> bool:
+    parts = message.get("parts")
+    if not isinstance(parts, list):
+        return False
+    return any(
+        isinstance(part, dict) and part.get("type") == "step-finish" for part in parts
+    )
+
+
+def assistant_message_completed(message: JsonDict) -> bool:
+    """Return whether an assistant message reached a terminal recorded state."""
+    return _assistant_message_finished(message) or _assistant_message_has_step_finish(message)
 
 
 def pending_system_prompts(messages: list[JsonDict]) -> list[str]:
@@ -352,15 +394,15 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
             if signature != previous_signature:
                 previous_signature = signature
                 stable_since = time.monotonic()
-            result = self._idle_wait_result(
-                session_id=session_id,
-                messages=messages,
-                updated_at=latest_updated_at,
-                wait=wait,
-                stable_since=stable_since,
-            )
+            result = self._idle_wait_result(messages=messages, wait=wait, stable_since=stable_since)
             if result is not None:
-                return result
+                assistant_message, stable_for = result
+                return self._wait_result(
+                    assistant_message,
+                    session_id,
+                    stable_for,
+                    latest_updated_at,
+                )
             time.sleep(0.5)
 
         raise WaitTimeoutError(
@@ -560,37 +602,51 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     def _idle_wait_result(
         self,
         *,
-        session_id: str,
         messages: list[JsonDict],
-        updated_at: int | float | None,
         wait: WaitConfig,
         stable_since: float,
-    ) -> WaitResult | None:
+    ) -> tuple[str | None, float] | None:
+        if self._assistant_turn_in_progress(messages, wait):
+            return None
         assistant_message = self._assistant_message_for_wait(messages, wait)
         if not wait.require_new_assistant and not has_pending_prompt(messages):
-            return WaitResult(
-                assistant_message=assistant_message,
-                session_id=session_id,
-                stable_for_seconds=0.0,
-                updated_at=updated_at,
-            )
+            return assistant_message, 0.0
         if wait.require_new_assistant and assistant_message is None:
             return None
         stable_for = time.monotonic() - stable_since
         if stable_for < wait.quiet_period_sec:
             return None
-        return WaitResult(
-            assistant_message=assistant_message,
-            session_id=session_id,
-            stable_for_seconds=stable_for,
-            updated_at=updated_at,
-        )
+        return assistant_message, stable_for
 
     @staticmethod
     def _assistant_message_for_wait(messages: list[JsonDict], wait: WaitConfig) -> str | None:
         if wait.require_new_assistant:
             return latest_assistant_text_since(messages, wait.initial_assistant_count)
         return latest_assistant_text(messages)
+
+    @staticmethod
+    def _assistant_turn_in_progress(messages: list[JsonDict], wait: WaitConfig) -> bool:
+        assistants = assistant_messages(messages)
+        if len(assistants) <= wait.initial_assistant_count:
+            return False
+        latest = latest_assistant_message(messages)
+        if latest is None:
+            return False
+        return not assistant_message_completed(latest)
+
+    @staticmethod
+    def _wait_result(
+        assistant_message: str | None,
+        session_id: str,
+        stable_for_seconds: float,
+        updated_at: int | float | None,
+    ) -> WaitResult:
+        return WaitResult(
+            assistant_message=assistant_message,
+            session_id=session_id,
+            stable_for_seconds=stable_for_seconds,
+            updated_at=updated_at,
+        )
 
     @staticmethod
     def _consume_stream(lines: Iterator[str]) -> None:
