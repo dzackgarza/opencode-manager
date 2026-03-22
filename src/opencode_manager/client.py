@@ -686,6 +686,8 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         assistant_message: str | None,
         stable_for: float,
     ) -> bool:
+        if OpenCodeManagerClient._assistant_turn_in_progress(messages, wait):
+            return assistant_message is not None and stable_for >= wait.quiet_period_sec
         if not wait.require_new_assistant and not has_pending_prompt(messages):
             return True
         if assistant_message is None:

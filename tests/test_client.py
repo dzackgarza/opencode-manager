@@ -284,3 +284,41 @@ def test_wait_accepts_stable_assistant_text_without_finish_markers() -> None:
     assistant_message, stable_for = result
     assert assistant_message == "READY"
     assert stable_for >= 1.5
+
+
+def test_wait_does_not_accept_an_unfinished_assistant_turn_immediately() -> None:
+    messages = cast(
+        list[dict[str, object]],
+        [
+            {
+                "info": {"role": "user"},
+                "parts": [{"type": "text", "text": "Reply with ONLY READY."}],
+            },
+            {
+                "info": {
+                    "role": "assistant",
+                    "time": {"created": 1774182399739},
+                },
+                "parts": [
+                    {
+                        "type": "step-start",
+                        "snapshot": "ae818702f7d35c824690b8cc2503cd27b65e3950",
+                    },
+                    {
+                        "type": "text",
+                        "text": "READY",
+                    },
+                ],
+            },
+        ],
+    )
+
+    client = OpenCodeManagerClient.__new__(OpenCodeManagerClient)
+    result = client._idle_wait_result(
+        messages=messages,
+        wait=WaitConfig(initial_assistant_count=0),
+        stable_since=time.monotonic(),
+        session_state="idle",
+    )
+
+    assert result is None
