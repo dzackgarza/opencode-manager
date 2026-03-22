@@ -637,22 +637,58 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
             return None
         assistant_message = self._assistant_message_for_wait(messages, wait)
         stable_for = time.monotonic() - stable_since
-        if session_state is None and self._assistant_turn_in_progress(messages, wait):
-            if (
-                stable_for < wait.quiet_period_sec
-                or assistant_message is None
-                or latest_message_role(messages) != "assistant"
-                or has_pending_prompt(messages)
-            ):
-                return None
+        if self._can_accept_stable_assistant_without_finish(
+            messages,
+            wait,
+            assistant_message=assistant_message,
+            stable_for=stable_for,
+            session_state=session_state,
+        ):
             return assistant_message, stable_for
+        if not self._idle_wait_ready(
+            messages,
+            wait,
+            assistant_message=assistant_message,
+            stable_for=stable_for,
+        ):
+            return None
         if not wait.require_new_assistant and not has_pending_prompt(messages):
             return assistant_message, 0.0
-        if wait.require_new_assistant and assistant_message is None:
-            return None
-        if stable_for < wait.quiet_period_sec:
-            return None
         return assistant_message, stable_for
+
+    @staticmethod
+    def _can_accept_stable_assistant_without_finish(
+        messages: list[JsonDict],
+        wait: WaitConfig,
+        *,
+        assistant_message: str | None,
+        stable_for: float,
+        session_state: str | None,
+    ) -> bool:
+        if session_state is not None:
+            return False
+        if not OpenCodeManagerClient._assistant_turn_in_progress(messages, wait):
+            return False
+        return (
+            stable_for >= wait.quiet_period_sec
+            and assistant_message is not None
+            and latest_message_role(messages) == "assistant"
+            and not has_pending_prompt(messages)
+        )
+
+    @staticmethod
+    def _idle_wait_ready(
+        messages: list[JsonDict],
+        wait: WaitConfig,
+        *,
+        assistant_message: str | None,
+        stable_for: float,
+    ) -> bool:
+        if not wait.require_new_assistant and not has_pending_prompt(messages):
+            return True
+        if assistant_message is None:
+            return False
+        return stable_for >= wait.quiet_period_sec
 
     @staticmethod
     def _assistant_message_for_wait(messages: list[JsonDict], wait: WaitConfig) -> str | None:

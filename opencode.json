@@ -20,7 +20,8 @@
         "todoread": "deny",
         "todowrite": "deny",
         "skill": "deny"
-      }
+      },
+      "model": "github-copilot/gpt-4.1"
     }
   },
   "plugin": []
