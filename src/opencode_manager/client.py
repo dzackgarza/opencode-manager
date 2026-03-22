@@ -635,14 +635,21 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
     ) -> tuple[str | None, float] | None:
         if session_state not in {None, "idle"}:
             return None
-        if session_state is None and self._assistant_turn_in_progress(messages, wait):
-            return None
         assistant_message = self._assistant_message_for_wait(messages, wait)
+        stable_for = time.monotonic() - stable_since
+        if session_state is None and self._assistant_turn_in_progress(messages, wait):
+            if (
+                stable_for < wait.quiet_period_sec
+                or assistant_message is None
+                or latest_message_role(messages) != "assistant"
+                or has_pending_prompt(messages)
+            ):
+                return None
+            return assistant_message, stable_for
         if not wait.require_new_assistant and not has_pending_prompt(messages):
             return assistant_message, 0.0
         if wait.require_new_assistant and assistant_message is None:
             return None
-        stable_for = time.monotonic() - stable_since
         if stable_for < wait.quiet_period_sec:
             return None
         return assistant_message, stable_for

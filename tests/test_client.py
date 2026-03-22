@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import cast
 
 from opencode_manager.client import (
@@ -242,3 +243,44 @@ def test_idle_signature_changes_when_session_state_changes() -> None:
     idle = OpenCodeManagerClient._idle_signature(1000, messages, session_state="idle")
 
     assert active != idle
+
+
+def test_wait_accepts_stable_assistant_text_without_finish_markers() -> None:
+    messages = cast(
+        list[dict[str, object]],
+        [
+            {
+                "info": {"role": "user"},
+                "parts": [{"type": "text", "text": "Reply with ONLY READY."}],
+            },
+            {
+                "info": {
+                    "role": "assistant",
+                    "time": {"created": 1774182399739},
+                },
+                "parts": [
+                    {
+                        "type": "step-start",
+                        "snapshot": "ae818702f7d35c824690b8cc2503cd27b65e3950",
+                    },
+                    {
+                        "type": "text",
+                        "text": "READY",
+                    },
+                ],
+            },
+        ],
+    )
+
+    client = OpenCodeManagerClient.__new__(OpenCodeManagerClient)
+    result = client._idle_wait_result(
+        messages=messages,
+        wait=WaitConfig(initial_assistant_count=0),
+        stable_since=time.monotonic() - 5.0,
+        session_state=None,
+    )
+
+    assert result is not None
+    assistant_message, stable_for = result
+    assert assistant_message == "READY"
+    assert stable_for >= 1.5
