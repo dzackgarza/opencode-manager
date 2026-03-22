@@ -388,13 +388,18 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         latest_updated_at: int | float | None = None
 
         while time.monotonic() < deadline:
-            latest_updated_at, messages, signature = self._wait_snapshot(
+            latest_updated_at, messages, signature, session_state = self._wait_snapshot(
                 session_id, context=context
             )
             if signature != previous_signature:
                 previous_signature = signature
                 stable_since = time.monotonic()
-            result = self._idle_wait_result(messages=messages, wait=wait, stable_since=stable_since)
+            result = self._idle_wait_result(
+                messages=messages,
+                wait=wait,
+                stable_since=stable_since,
+                session_state=session_state,
+            )
             if result is not None:
                 assistant_message, stable_for = result
                 return self._wait_result(
@@ -593,11 +598,32 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
 
     def _wait_snapshot(
         self, session_id: str, *, context: SessionContext
-    ) -> tuple[int | float | None, list[JsonDict], tuple[object, ...]]:
+    ) -> tuple[int | float | None, list[JsonDict], tuple[object, ...], str | None]:
         session = self.get_session(session_id)
         updated_at = self._session_updated_at(session)
         messages = self.list_messages(session_id, context=context)
-        return updated_at, messages, self._idle_signature(updated_at, messages)
+        session_state = self.session_status(session_id)
+        return (
+            updated_at,
+            messages,
+            self._idle_signature(updated_at, messages, session_state=session_state),
+            session_state,
+        )
+
+    def session_status(self, session_id: str) -> str | None:
+        """Return the server-reported session state when available."""
+        response = self._http.get("/session/status")
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise PromptDeliveryError("Session status payload was not a JSON object.")
+        raw_status = payload.get(session_id)
+        if not isinstance(raw_status, dict):
+            return None
+        state = raw_status.get("state")
+        if not isinstance(state, str) or not state.strip():
+            return None
+        return state.strip().lower()
 
     def _idle_wait_result(
         self,
@@ -605,8 +631,11 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         messages: list[JsonDict],
         wait: WaitConfig,
         stable_since: float,
+        session_state: str | None,
     ) -> tuple[str | None, float] | None:
-        if self._assistant_turn_in_progress(messages, wait):
+        if session_state not in {None, "idle"}:
+            return None
+        if session_state is None and self._assistant_turn_in_progress(messages, wait):
             return None
         assistant_message = self._assistant_message_for_wait(messages, wait)
         if not wait.require_new_assistant and not has_pending_prompt(messages):
@@ -694,7 +723,10 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
 
     @staticmethod
     def _idle_signature(
-        updated_at: int | float | None, messages: list[JsonDict]
+        updated_at: int | float | None,
+        messages: list[JsonDict],
+        *,
+        session_state: str | None = None,
     ) -> tuple[object, ...]:
         latest = messages[-1] if messages else {}
         info = latest.get("info") if isinstance(latest, dict) else {}
@@ -702,7 +734,7 @@ class OpenCodeManagerClient(AbstractContextManager["OpenCodeManagerClient"]):
         finish = info.get("finish") if isinstance(info, dict) else None
         latest_parts = latest.get("parts")
         latest_text = flatten_text(latest_parts) if isinstance(latest_parts, list) else ""
-        return (len(messages), role, finish, latest_text)
+        return (session_state, len(messages), role, finish, latest_text)
 
     @staticmethod
     def _matches_chat_prompt(message: JsonDict, prompt: str) -> bool:

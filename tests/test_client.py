@@ -214,7 +214,31 @@ def test_idle_signature_ignores_session_updated_at_noise() -> None:
         ],
     )
 
-    first = OpenCodeManagerClient._idle_signature(1000, messages)
-    second = OpenCodeManagerClient._idle_signature(1001, messages)
+    first = OpenCodeManagerClient._idle_signature(1000, messages, session_state="idle")
+    second = OpenCodeManagerClient._idle_signature(1001, messages, session_state="idle")
 
     assert first == second
+
+
+def test_idle_signature_changes_when_session_state_changes() -> None:
+    messages = cast(
+        list[dict[str, object]],
+        [
+            {
+                "info": {"role": "user"},
+                "parts": [{"type": "text", "text": "Reply with ONLY READY."}],
+            },
+            {
+                "info": {
+                    "role": "assistant",
+                    "time": {"created": 1774182399739},
+                },
+                "parts": [{"type": "text", "text": "READY"}],
+            },
+        ],
+    )
+
+    active = OpenCodeManagerClient._idle_signature(1000, messages, session_state="active")
+    idle = OpenCodeManagerClient._idle_signature(1000, messages, session_state="idle")
+
+    assert active != idle
