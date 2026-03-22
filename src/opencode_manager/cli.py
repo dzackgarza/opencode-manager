@@ -113,7 +113,9 @@ def _project_default_agent(start: Path | None = None) -> str | None:
     try:
         payload = json_lib.loads(project_config.read_text(encoding="utf-8"))
     except (OSError, json_lib.JSONDecodeError) as exc:
-        raise OpxError(f"Failed to parse project OpenCode config at {project_config}: {exc}") from exc
+        raise OpxError(
+            f"Failed to parse project OpenCode config at {project_config}: {exc}"
+        ) from exc
     if not isinstance(payload, dict):
         return None
     default_agent = payload.get("default_agent")
