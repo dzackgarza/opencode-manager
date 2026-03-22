@@ -239,7 +239,7 @@ def one_shot(
         session_id = str(session["id"])
         context = default_session_context()
         try:
-            result = client.submit_prompt(
+            client.submit_prompt_no_wait(
                 session_id,
                 SubmissionRequest(
                     prompt=command.prompt,
@@ -248,6 +248,11 @@ def one_shot(
                     model=command.model,
                     context=context,
                 ),
+            )
+            result = client.wait_until_idle(
+                session_id,
+                wait=WaitConfig(require_new_assistant=True),
+                context=context,
             )
             if command.transcript:
                 sys.stdout.write(_render_live_transcript(client, session_id, as_json=False))
