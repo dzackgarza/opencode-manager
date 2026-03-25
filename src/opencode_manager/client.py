@@ -218,19 +218,13 @@ def _model_ref_from_info(info: JsonDict) -> str | None:
     return f"{provider_id}/{model_id}" if provider_id and model_id else None
 
 
-def observed_identity(messages: list[JsonDict]) -> tuple[str | None, str | None]:
-    """Derive the active responder identity from live session history."""
-    for message in reversed(messages):
-        info = message.get("info")
-        if not isinstance(info, dict):
-            continue
-
-        agent = _agent_from_info(info)
-        model_ref = _model_ref_from_info(info)
-        if agent or model_ref:
-            return agent, model_ref
-
-    return None, None
+def observed_identity(messages: list[JsonDict]) -> tuple[str, str]:
+    """Return the model from the last user message."""
+    user_models = (m["info"]["model"] for m in reversed(messages) if m["info"]["role"] == "user")
+    model = next(user_models, None)
+    if model is None:
+        raise RuntimeError("No user message with model found in session history")
+    return model["providerID"], f"{model['providerID']}/{model['modelID']}"
 
 
 def _merge_system_prompts(existing: list[str], prompt_system: str | None) -> str | None:
