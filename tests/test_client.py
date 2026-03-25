@@ -17,7 +17,7 @@ def test_observed_identity_returns_last_user_message_model() -> None:
     messages = cast(
         list[dict[str, object]],
         [
-            {"info": {"role": "user", "model": {"providerID": "openai", "modelID": "gpt-5.4"}}},
+            {"info": {"role": "user", "agent": "Interactive", "model": {"providerID": "openai", "modelID": "gpt-5.4"}}},
             {
                 "info": {
                     "role": "assistant",
@@ -28,7 +28,7 @@ def test_observed_identity_returns_last_user_message_model() -> None:
         ],
     )
 
-    assert observed_identity(messages) == ("openai", "openai/gpt-5.4")
+    assert observed_identity(messages) == ("Interactive", "openai/gpt-5.4")
 
 
 def test_observed_identity_raises_when_no_user_message_exists() -> None:
