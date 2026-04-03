@@ -218,16 +218,28 @@ def _model_ref_from_info(info: JsonDict) -> str | None:
     return f"{provider_id}/{model_id}" if provider_id and model_id else None
 
 
+def _observed_identity_or_none(messages: list[JsonDict]) -> tuple[str, str] | None:
+    for message in reversed(messages):
+        info = message.get("info")
+        if not isinstance(info, dict) or info.get("role") != "user":
+            continue
+        parts = message.get("parts")
+        if not isinstance(parts, list) or not flatten_text(parts):
+            continue
+        agent = _agent_from_info(info)
+        model_ref = _model_ref_from_info(info)
+        if agent is None or model_ref is None:
+            continue
+        return agent, model_ref
+    return None
+
+
 def observed_identity(messages: list[JsonDict]) -> tuple[str, str]:
     """Return the agent and model from the last user message."""
-    user_message = next(
-        (m for m in reversed(messages) if m["info"]["role"] == "user"),
-        None
-    )
-    if user_message is None:
-        raise RuntimeError("No user message with model found in session history")
-    info = user_message["info"]
-    return info["agent"], f"{info['model']['providerID']}/{info['model']['modelID']}"
+    identity = _observed_identity_or_none(messages)
+    if identity is None:
+        raise RuntimeError("No prior user chat message with agent/model found in session history")
+    return identity
 
 
 def _merge_system_prompts(existing: list[str], prompt_system: str | None) -> str | None:

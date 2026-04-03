@@ -3,8 +3,11 @@ from __future__ import annotations
 import time
 from typing import cast
 
+import pytest
+
 from opencode_manager.client import (
     OpenCodeManagerClient,
+    SubmissionRequest,
     WaitConfig,
     assistant_message_completed,
     assistant_messages,
@@ -17,7 +20,14 @@ def test_observed_identity_returns_last_user_message_model() -> None:
     messages = cast(
         list[dict[str, object]],
         [
-            {"info": {"role": "user", "agent": "Interactive", "model": {"providerID": "openai", "modelID": "gpt-5.4"}}},
+            {
+                "info": {
+                    "role": "user",
+                    "agent": "Interactive",
+                    "model": {"providerID": "openai", "modelID": "gpt-5.4"},
+                },
+                "parts": [{"type": "text", "text": "Keep using gpt-5.4."}],
+            },
             {
                 "info": {
                     "role": "assistant",
@@ -29,6 +39,32 @@ def test_observed_identity_returns_last_user_message_model() -> None:
     )
 
     assert observed_identity(messages) == ("Interactive", "openai/gpt-5.4")
+
+
+def test_observed_identity_ignores_empty_user_records_with_model_metadata() -> None:
+    messages = cast(
+        list[dict[str, object]],
+        [
+            {
+                "info": {
+                    "role": "user",
+                    "agent": "Interactive",
+                    "model": {"providerID": "minimax", "modelID": "text-01"},
+                },
+                "parts": [{"type": "text", "text": "Keep using minimax."}],
+            },
+            {
+                "info": {
+                    "role": "user",
+                    "agent": "Kilo-Auto",
+                    "model": {"providerID": "opencode", "modelID": "kilo-auto"},
+                },
+                "parts": [],
+            },
+        ],
+    )
+
+    assert observed_identity(messages) == ("Interactive", "minimax/text-01")
 
 
 def test_observed_identity_raises_when_no_user_message_exists() -> None:
@@ -45,9 +81,18 @@ def test_observed_identity_raises_when_no_user_message_exists() -> None:
         ],
     )
 
-    import pytest
-    with pytest.raises(RuntimeError, match="No user message with model found"):
+    with pytest.raises(RuntimeError, match="No prior user chat message with agent/model found"):
         observed_identity(messages)
+
+
+def test_payload_for_submission_raises_without_prior_user_prompt() -> None:
+    client = OpenCodeManagerClient.__new__(OpenCodeManagerClient)
+
+    with pytest.raises(RuntimeError, match="No prior user chat message with agent/model found"):
+        client._payload_for_submission(
+            SubmissionRequest(prompt="Continue", visibility="chat"),
+            messages=[],
+        )
 
 
 def test_session_headers_quote_directory_paths() -> None:
